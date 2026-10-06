@@ -1,0 +1,20 @@
+[Unit]
+Description=Encrypted inhouse volumes and node-state backup
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=/var/lib/inhouse
+ConditionPathExists=/etc/inhouse/backup.env
+
+[Service]
+Type=oneshot
+LoadCredential=backup-env:/etc/inhouse/backup.env
+LoadCredential=restic-password:/etc/inhouse/restic-password
+UMask=0077
+ExecStart=/usr/local/libexec/inhouse/backup.sh
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=tmpfs
+BindReadOnlyPaths=/run/user/1500/podman
+ReadWritePaths=/var/lib/inhouse/snapshots /var/lib/inhouse/backup /var/lib/inhouse/volumes/.trash
+PrivateTmp=yes
+TimeoutStartSec=2h

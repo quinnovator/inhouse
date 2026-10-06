@@ -1,0 +1,15 @@
+# A private image registry (zot) running as an ordinary inhouse service.
+# Push from a laptop:  docker push registry.<tailnet>.ts.net/myapp:1
+# Then deploy specs that use image: registry.<tailnet>.ts.net/myapp:1
+name: registry
+containers:
+  zot:
+    image: ghcr.io/project-zot/zot@sha256:6b69512c00dceaad05b1144e6079aac6aa7309d7fd200f9947ecb1de09cf48c8
+    port: 5000
+    health:
+      path: /v2/
+      timeout: 90s
+    volumes:
+      data: /var/lib/registry
+    resources:
+      memory: 1Gi

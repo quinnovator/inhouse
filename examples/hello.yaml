@@ -1,0 +1,12 @@
+# The smallest useful stack: one container that echoes the request back,
+# including the Tailscale-User-* headers inhouse adds.
+name: hello
+containers:
+  web:
+    image: docker.io/traefik/whoami@sha256:200689790a0a0ea48ca45992e0450bc26ccab5307375b41c84dfc4f2475937ab
+    port: 80
+    health:
+      path: /health
+    resources:
+      memory: 128Mi
+      cpus: 0.5

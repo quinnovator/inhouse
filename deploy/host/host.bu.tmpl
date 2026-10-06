@@ -1,0 +1,233 @@
+variant: fcos
+version: 1.6.0
+passwd:
+  groups:
+    - name: inhouse
+      gid: 1500
+  users:
+    - name: core
+      ssh_authorized_keys:
+        - ${SSH_PUBKEY}
+    - name: inhouse
+      uid: 1500
+      primary_group: inhouse
+      home_dir: /var/lib/inhouse/home
+      shell: /usr/sbin/nologin
+      no_create_home: true
+storage:
+  disks:
+    - device: ${DATA_DISK}
+      wipe_table: true
+      partitions:
+        - number: 1
+          label: inhouse-data
+  filesystems:
+    - device: /dev/disk/by-partlabel/inhouse-data
+      format: btrfs
+      label: inhouse-data
+      path: /var/lib/inhouse
+      wipe_filesystem: true
+      mount_options:
+        - compress=zstd
+        - user_subvol_rm_allowed
+      with_mount_unit: true
+  directories:
+    - path: /var/lib/inhouse/home
+      mode: 0700
+      user: { name: inhouse }
+      group: { name: inhouse }
+    - path: /var/lib/inhouse/home/.config
+      mode: 0700
+      user: { name: inhouse }
+      group: { name: inhouse }
+    - path: /var/lib/inhouse/home/.config/containers
+      mode: 0700
+      user: { name: inhouse }
+      group: { name: inhouse }
+    - path: /var/lib/inhouse/home/.config/systemd
+      mode: 0700
+      user: { name: inhouse }
+      group: { name: inhouse }
+    - path: /var/lib/inhouse/home/.config/systemd/user
+      mode: 0700
+      user: { name: inhouse }
+      group: { name: inhouse }
+    - path: /var/lib/inhouse/home/.config/systemd/user/podman.socket.d
+      mode: 0700
+      user: { name: inhouse }
+      group: { name: inhouse }
+    - path: /var/lib/inhouse/home/.config/systemd/user/sockets.target.wants
+      mode: 0700
+      user: { name: inhouse }
+      group: { name: inhouse }
+    - path: /var/lib/inhouse/state
+      mode: 0700
+      user: { name: inhouse }
+      group: { name: inhouse }
+    - path: /var/lib/inhouse/ts
+      mode: 0700
+      user: { name: inhouse }
+      group: { name: inhouse }
+    - path: /var/lib/inhouse/volumes
+      mode: 0700
+      user: { name: inhouse }
+      group: { name: inhouse }
+    - path: /var/lib/inhouse/snapshots
+      mode: 0700
+      user: { name: inhouse }
+      group: { name: inhouse }
+    - path: /var/lib/inhouse/keys
+      mode: 0700
+      user: { name: inhouse }
+      group: { name: inhouse }
+    - path: /var/lib/inhouse/containers
+      mode: 0700
+      user: { name: inhouse }
+      group: { name: inhouse }
+    - path: /etc/inhouse
+      mode: 0700
+    - path: /var/lib/systemd/linger
+      mode: 0755
+  files:
+    - path: /etc/hostname
+      mode: 0644
+      contents:
+        inline: ${HOSTNAME}
+    - path: /var/lib/systemd/linger/inhouse
+      mode: 0644
+      contents: { inline: "" }
+    - path: /etc/subuid
+      overwrite: true
+      mode: 0644
+      contents:
+        inline: |
+          core:100000:65536
+          inhouse:1000000:4194304
+    - path: /etc/subgid
+      overwrite: true
+      mode: 0644
+      contents:
+        inline: |
+          core:100000:65536
+          inhouse:1000000:4194304
+    - path: /var/lib/inhouse/home/.config/containers/storage.conf
+      mode: 0600
+      user: { name: inhouse }
+      group: { name: inhouse }
+      contents:
+        inline: |
+          [storage]
+          driver = "overlay"
+          runroot = "/run/user/1500/containers"
+          graphroot = "/var/lib/inhouse/containers"
+    - path: /var/lib/inhouse/home/.config/systemd/user/podman.socket.d/10-permissions.conf
+      mode: 0644
+      user: { name: inhouse }
+      group: { name: inhouse }
+      contents:
+        inline: |
+          [Socket]
+          SocketMode=0600
+    - path: /etc/yum.repos.d/tailscale.repo
+      mode: 0644
+      contents:
+        inline: |
+          [tailscale-stable]
+          name=Tailscale stable
+          baseurl=https://pkgs.tailscale.com/stable/fedora/$basearch
+          enabled=1
+          type=rpm
+          repo_gpgcheck=1
+          gpgcheck=1
+          gpgkey=https://pkgs.tailscale.com/stable/fedora/repo.gpg
+    - path: /etc/zincati/config.d/55-updates-strategy.toml
+      mode: 0644
+      contents:
+        inline: |
+          [updates]
+          strategy = "periodic"
+          [[updates.periodic.window]]
+          days = [ "Sun" ]
+          start_time = "04:00"
+          length_minutes = 60
+    - path: /etc/inhouse/firewall-bootstrap.nft
+      mode: 0600
+      contents:
+        inline: |
+          table inet inhouse {}
+          flush table inet inhouse
+          table inet inhouse {
+            chain input {
+              type filter hook input priority 0; policy drop;
+              iifname "lo" accept
+              ct state established,related accept
+              ct state invalid drop
+              iifname "tailscale0" accept
+              udp dport 41641 accept
+              ip protocol icmp accept
+              meta l4proto ipv6-icmp accept
+              tcp dport 22 accept comment "bootstrap-only"
+            }
+          }
+    - path: /etc/inhouse/firewall-locked.nft
+      mode: 0600
+      contents:
+        inline: |
+          table inet inhouse {}
+          flush table inet inhouse
+          table inet inhouse {
+            chain input {
+              type filter hook input priority 0; policy drop;
+              iifname "lo" accept
+              ct state established,related accept
+              ct state invalid drop
+              iifname "tailscale0" accept
+              udp dport 41641 accept
+              ip protocol icmp accept
+              meta l4proto ipv6-icmp accept
+            }
+          }
+  links:
+    - path: /var/lib/inhouse/home/.config/systemd/user/sockets.target.wants/podman.socket
+      target: /usr/lib/systemd/user/podman.socket
+      user: { name: inhouse }
+      group: { name: inhouse }
+    - path: /etc/inhouse/firewall-active.nft
+      target: /etc/inhouse/firewall-bootstrap.nft
+systemd:
+  units:
+    - name: docker.service
+      mask: true
+    - name: docker.socket
+      mask: true
+    - name: firewalld.service
+      mask: true
+    - name: inhouse-firewall.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=inhouse host input firewall
+        Before=network-pre.target
+        Wants=network-pre.target
+        [Service]
+        Type=oneshot
+        RemainAfterExit=yes
+        ExecStart=/usr/sbin/nft -f /etc/inhouse/firewall-active.nft
+        [Install]
+        WantedBy=multi-user.target
+    - name: inhouse-tailscale-install.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Layer and enable host Tailscale
+        After=network-online.target
+        Wants=network-online.target
+        ConditionPathExists=!/var/lib/inhouse/tailscale-installed
+        [Service]
+        Type=oneshot
+        TimeoutStartSec=900
+        ExecStart=/usr/bin/rpm-ostree install --apply-live tailscale
+        ExecStart=/usr/bin/systemctl enable --now tailscaled.service
+        ExecStart=/usr/bin/touch /var/lib/inhouse/tailscale-installed
+        [Install]
+        WantedBy=multi-user.target

@@ -1,0 +1,35 @@
+name: check
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.mod
+      - run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      - run: go test -race ./...
+      - name: Lint with checksum-verified golangci-lint v2.14.0
+        run: |
+          curl -fsSL https://github.com/golangci/golangci-lint/releases/download/v2.14.0/golangci-lint-2.14.0-linux-amd64.tar.gz -o /tmp/golangci-lint.tar.gz
+          echo 'ab90aeb7b066f92a33415b638a50fe5344bbb75a0d32ad30cc248d88f81032ab  /tmp/golangci-lint.tar.gz' | sha256sum -c
+          tar -xzf /tmp/golangci-lint.tar.gz -C /tmp
+          /tmp/golangci-lint-2.14.0-linux-amd64/golangci-lint run ./...
+      - name: Real rootless Podman
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y podman uidmap slirp4netns
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          socket="$XDG_RUNTIME_DIR/inhouse-test.sock"
+          podman system service --time=0 "unix://$socket" > /tmp/podman.log 2>&1 &
+          for _ in $(seq 30); do test -S "$socket" && break; sleep 1; done
+          INHOUSE_TEST_PODMAN_SOCKET="$socket" INHOUSE_TEST_NETWORK=slirp4netns \
+            go test -v -run TestPodmanIntegration ./internal/podman || { cat /tmp/podman.log; exit 1; }
+      - name: Static Linux binaries
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o /tmp/inhoused ./cmd/inhoused
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o /tmp/inhouse ./cmd/inhouse

@@ -1,0 +1,34 @@
+[Unit]
+Description=inhouse daemon: deployment engine and tailnet HTTPS edges
+Requires=user@1500.service
+After=user@1500.service network-online.target
+Wants=network-online.target
+RequiresMountsFor=/var/lib/inhouse
+
+[Service]
+Type=simple
+User=inhouse
+Group=inhouse
+Environment=HOME=/var/lib/inhouse/home
+Environment=XDG_RUNTIME_DIR=/run/user/1500
+# CAPABILITY, ENROLL_CLIENT_ID and LIFECYCLE_CLIENT_ID; no secrets.
+EnvironmentFile=/etc/inhouse/inhoused.env
+# OAuth secrets stay root-only in /etc/inhouse; systemd hands the daemon a copy.
+LoadCredential=enroll-secret:/etc/inhouse/enroll-secret
+LoadCredential=lifecycle-secret:/etc/inhouse/lifecycle-secret
+UMask=0077
+ExecStart=/usr/local/bin/inhoused -capability ${CAPABILITY} -enroll-client-id ${ENROLL_CLIENT_ID} -lifecycle-client-id ${LIFECYCLE_CLIENT_ID}
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=20s
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/inhouse
+# ProtectHome also hides /run/user; expose only the Podman API socket directory.
+ProtectHome=tmpfs
+BindReadOnlyPaths=/run/user/1500/podman
+PrivateTmp=yes
+MemoryMax=2G
+
+[Install]
+WantedBy=multi-user.target

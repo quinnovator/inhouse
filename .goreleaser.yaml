@@ -1,0 +1,28 @@
+version: 2
+builds:
+  - id: inhoused
+    main: ./cmd/inhoused
+    binary: inhoused
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags: ["-s -w -X github.com/quinnovator/inhouse/internal/version.Version={{.Version}}"]
+    goos: [linux]
+    goarch: [amd64, arm64]
+  - id: inhouse
+    main: ./cmd/inhouse
+    binary: inhouse
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags: ["-s -w -X github.com/quinnovator/inhouse/internal/version.Version={{.Version}}"]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+archives:
+  - formats: [tar.gz]
+    name_template: '{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+checksum:
+  name_template: checksums.sha512
+  algorithm: sha512
+release:
+  draft: true
+changelog:
+  use: git

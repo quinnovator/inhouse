@@ -1,0 +1,31 @@
+# A web app and its database in one pod. They share localhost; only the web
+# container's port is published. Set the secret first:
+#   echo -n 'a-long-random-password' | inhouse secrets set notes-db-password
+name: notes
+containers:
+  db:
+    image: docker.io/library/postgres:17
+    env:
+      POSTGRES_USER: notes
+      POSTGRES_DB: notes
+    secrets:
+      POSTGRES_PASSWORD: notes-db-password
+    volumes:
+      data: /var/lib/postgresql/data   # survives deploys and rollbacks
+    health:
+      command: ["pg_isready", "-U", "notes"]
+  web:
+    image: ghcr.io/example/notes:1.0.0
+    port: 8080
+    env:
+      DATABASE_HOST: localhost
+      DATABASE_USER: notes
+    secrets:
+      DATABASE_PASSWORD: notes-db-password
+    health:
+      path: /healthz
+      timeout: 90s
+    resources:
+      memory: 256Mi
+# With a volume, updates use the recreate strategy: the old revision stops
+# before the new one starts, so two revisions never write the same data.

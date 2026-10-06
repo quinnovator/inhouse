@@ -1,0 +1,7 @@
+/dist/
+# Instance data never belongs here: keep it in a separate private repo.
+/instance/
+*.ign
+*.key
+*.env
+.DS_Store

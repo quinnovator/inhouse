@@ -1,0 +1,11 @@
+[Unit]
+Description=Nightly inhouse data backup
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+RandomizedDelaySec=10m
+Unit=inhouse-backup.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "inhouse stack",
+  "description": "A service: its containers, which one receives traffic, health checks, environment, secrets and volumes. The parser additionally enforces exactly one ingress port, fully qualified image references, health timeouts of 5s-120s and recreate updates for stacks with volumes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "containers"
+  ],
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$"
+    },
+    "expose": {
+      "enum": [
+        "tailnet",
+        "funnel"
+      ],
+      "default": "tailnet",
+      "description": "tailnet: reachable only on your tailnet. funnel: also reachable from the public Internet through Tailscale Funnel."
+    },
+    "ttl": {
+      "type": [
+        "null",
+        "string"
+      ],
+      "description": "Go duration from 1s to 720h. Makes the service ephemeral: deleted automatically at expiry. Ephemeral services cannot use Funnel."
+    },
+    "containers": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 16,
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "image"
+        ],
+        "properties": {
+          "image": {
+            "type": "string"
+          },
+          "port": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535,
+            "description": "Container port receiving HTTP traffic. Exactly one container sets it."
+          },
+          "command": {
+            "type": "array",
+            "maxItems": 128,
+            "items": {
+              "type": "string"
+            }
+          },
+          "args": {
+            "type": "array",
+            "maxItems": 128,
+            "items": {
+              "type": "string"
+            }
+          },
+          "env": {
+            "type": "object",
+            "maxProperties": 128,
+            "propertyNames": {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+            },
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "health": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string",
+                "pattern": "^/"
+              },
+              "command": {
+                "type": "array",
+                "maxItems": 128,
+                "items": {
+                  "type": "string"
+                }
+              },
+              "timeout": {
+                "type": "string"
+              }
+            },
+            "not": {
+              "required": [
+                "path",
+                "command"
+              ]
+            },
+            "description": "path: HTTP GET on the ingress must return 2xx. command: must exit 0 inside the container. Default for the ingress: TCP connect."
+          },
+          "resources": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "memory": {
+                "type": "string"
+              },
+              "cpus": {
+                "type": "number",
+                "minimum": 0.01,
+                "maximum": 64
+              }
+            }
+          },
+          "secrets": {
+            "type": "object",
+            "maxProperties": 128,
+            "propertyNames": {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+            },
+            "additionalProperties": {
+              "type": "string",
+              "pattern": "^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$"
+            },
+            "description": "Environment variable name -> platform secret name."
+          },
+          "volumes": {
+            "type": "object",
+            "maxProperties": 32,
+            "propertyNames": {
+              "pattern": "^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$"
+            },
+            "additionalProperties": {
+              "type": "string",
+              "pattern": "^/"
+            },
+            "description": "Volume name -> absolute mount path. Volumes belong to the service and survive deploys."
+          }
+        }
+      }
+    },
+    "update_strategy": {
+      "enum": [
+        "rolling",
+        "recreate"
+      ],
+      "description": "rolling (default) starts the new revision beside the old one. recreate (required with volumes) stops the old revision first, so updates cause brief downtime."
+    }
+  }
+}

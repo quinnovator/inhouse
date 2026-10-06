@@ -1,0 +1,13 @@
+# Render instance-specific values outside Git. Credentials arrive from systemd.
+access-key-id: ${AWS_ACCESS_KEY_ID}
+secret-access-key: ${AWS_SECRET_ACCESS_KEY}
+dbs:
+  - path: /var/lib/inhouse/state/inhouse.db
+    replica:
+      type: s3
+      bucket: ${BACKUP_BUCKET}
+      path: inhouse/db
+      endpoint: ${BACKUP_ENDPOINT}
+      region: ${BACKUP_REGION}
+      force-path-style: true
+      sync-interval: 1s

@@ -1,0 +1,10 @@
+# An ephemeral service: deleted automatically, node and all, six hours after
+# its last deploy. The kind of thing an agent deploys to show you a branch.
+name: preview-hello
+ttl: 6h
+containers:
+  web:
+    image: docker.io/traefik/whoami@sha256:200689790a0a0ea48ca45992e0450bc26ccab5307375b41c84dfc4f2475937ab
+    port: 80
+    health:
+      path: /health

@@ -1,0 +1,24 @@
+[Unit]
+Description=Continuous inhouse SQLite backup
+After=network-online.target inhoused.service
+Wants=network-online.target
+RequiresMountsFor=/var/lib/inhouse
+ConditionPathExists=/etc/inhouse/litestream.yml
+
+[Service]
+User=inhouse
+Group=inhouse
+LoadCredential=backup-env:/etc/inhouse/backup.env
+LoadCredential=litestream-config:/etc/inhouse/litestream.yml
+UMask=0077
+ExecStart=/usr/local/libexec/inhouse/litestream-start.sh
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/inhouse/state
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

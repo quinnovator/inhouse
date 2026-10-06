@@ -1,0 +1,38 @@
+// Merge into your existing tailnet policy; don't replace it.
+// Replace you@example.com and example.com/cap/inhouse with your own values.
+{
+  "tagOwners": {
+    // The enroll OAuth client owns only this tag, which owns the three node classes.
+    "tag:inhouse-enroll":  ["autogroup:admin"],
+    "tag:inhouse-host":    ["autogroup:admin"],
+    "tag:inhouse-control": ["autogroup:admin", "tag:inhouse-enroll"],
+    "tag:inhouse-svc":     ["autogroup:admin", "tag:inhouse-enroll"],
+    "tag:inhouse-eph":     ["autogroup:admin", "tag:inhouse-enroll"],
+    "tag:inhouse-agent":   ["autogroup:admin"]
+  },
+  "grants": [
+    // You: admin on the control node.
+    {"src": ["you@example.com"], "dst": ["tag:inhouse-control"], "ip": ["tcp:443"],
+     "app": {"example.com/cap/inhouse": [{"role": "admin"}]}},
+
+    // Agents: short-lived, tailnet-only previews named preview-*.
+    {"src": ["tag:inhouse-agent"], "dst": ["tag:inhouse-control"], "ip": ["tcp:443"],
+     "app": {"example.com/cap/inhouse": [{"role": "deployer", "services": ["preview-*"], "expose": ["tailnet"], "max_ttl": "24h"}]}},
+
+    // Who can open the services themselves.
+    {"src": ["you@example.com", "tag:inhouse-agent"], "dst": ["tag:inhouse-svc", "tag:inhouse-eph"], "ip": ["tcp:443"]},
+
+    // The host pulls images from a registry you run as an inhouse service.
+    {"src": ["tag:inhouse-host"], "dst": ["tag:inhouse-svc"], "ip": ["tcp:443"]},
+
+    // You: SSH and everything else on the host.
+    {"src": ["you@example.com"], "dst": ["tag:inhouse-host"], "ip": ["*"]}
+  ],
+  "ssh": [
+    {"action": "accept", "src": ["you@example.com"], "dst": ["tag:inhouse-host"], "users": ["core"]}
+  ],
+  // Funnel is possible only for persistent services, never ephemeral ones or the control node.
+  "nodeAttrs": [
+    {"target": ["tag:inhouse-svc"], "attr": ["funnel"]}
+  ]
+}
