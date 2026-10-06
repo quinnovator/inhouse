@@ -17,8 +17,23 @@ builds:
     goos: [linux, darwin]
     goarch: [amd64, arm64]
 archives:
-  - formats: [tar.gz]
-    name_template: '{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+  # The CLI, for laptops and agents.
+  - id: inhouse
+    ids: [inhouse]
+    formats: [tar.gz]
+    name_template: 'inhouse_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+    files: [LICENSE]
+  # The daemon, with what install.sh expects next to it on the host.
+  - id: inhoused
+    ids: [inhoused]
+    formats: [tar.gz]
+    name_template: 'inhoused_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+    files:
+      - LICENSE
+      - src: deploy/host/inhoused.service
+        strip_parent: true
+      - src: deploy/host/install.sh
+        strip_parent: true
 checksum:
   name_template: checksums.sha512
   algorithm: sha512

@@ -72,9 +72,25 @@ Scan the host's public address from another machine: nothing should answer.
 
 ## 3. inhoused
 
-Build or download a release, verify its checksum, and stage `inhoused`,
-`inhoused.sha512` (`sha512sum inhoused > inhoused.sha512` from the verified
-binary) and `deploy/host/inhoused.service` in one directory on the host.
+Each [release](https://github.com/quinnovator/inhouse/releases) has an
+`inhoused_<version>_linux_<arch>.tar.gz` archive holding `inhoused`,
+`inhoused.service` and `install.sh`, plus a `checksums.sha512` covering
+every archive. Download both onto the host into an empty directory, verify
+and unpack the archive, and record the binary's checksum, which `install.sh`
+checks:
+
+```sh
+sha512sum -c --ignore-missing checksums.sha512
+tar -xzf inhoused_<version>_linux_<arch>.tar.gz
+sha512sum inhoused > inhoused.sha512
+```
+
+Every archive also carries a GitHub build provenance attestation; from a
+machine with the `gh` CLI, `gh attestation verify <archive> -R
+quinnovator/inhouse` checks that it was built from this repo. To build from
+source instead, stage your own `inhoused` with `deploy/host/inhoused.service`
+and `deploy/host/install.sh`.
+
 Copy the OAuth secrets as root-only files:
 
 ```

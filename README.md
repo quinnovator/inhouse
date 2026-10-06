@@ -49,6 +49,75 @@ deploy hello: operation 3f6c… (idempotency key 9b1e…)
 - **Reboots are boring.** State is written before every action; after a crash
   or reboot the reconciler simply carries on.
 
+## Quick start
+
+You need:
+
+- A Linux machine you can dedicate to inhouse, with a separate data disk. The
+  provided provisioning installs Fedora CoreOS with btrfs and rootless
+  Podman, and **erases both disks**.
+- A Tailscale tailnet where you can edit the policy and create OAuth clients,
+  and whose plan has room for one device per service.
+- Podman or Docker on your laptop, to render the host's Ignition config.
+
+[Operating a host](docs/operating.md) covers each step in full.
+
+**1. Install the CLI** on your laptop, with Go 1.26 or later:
+
+```sh
+go install github.com/quinnovator/inhouse/cmd/inhouse@latest
+```
+
+Or download `inhouse_<version>_<os>_<arch>.tar.gz` from
+[Releases](https://github.com/quinnovator/inhouse/releases) and check that
+GitHub built it from this repo:
+
+```sh
+gh attestation verify inhouse_*.tar.gz -R quinnovator/inhouse
+```
+
+**2. Prepare your tailnet.** Enable MagicDNS and HTTPS certificates. Merge
+[`deploy/policy/policy.hujson`](deploy/policy/policy.hujson) into your
+policy, replacing `you@example.com` with your login and
+`example.com/cap/inhouse` with a capability name on a domain you control.
+Create the `enroll` and `lifecycle` OAuth clients
+([details](docs/operating.md#1-tailnet)).
+
+**3. Provision the host.** Render the Ignition config with
+`deploy/host/render.sh`, install Fedora CoreOS with it, join the tailnet and
+close public SSH ([details](docs/operating.md#2-host)).
+
+**4. Install the daemon.** On the host, with your OAuth secrets already in
+`/etc/inhouse/enroll-secret` and `/etc/inhouse/lifecycle-secret` (root,
+0600):
+
+```sh
+VERSION=0.1.0 ARCH=amd64   # or arm64
+base=https://github.com/quinnovator/inhouse/releases/download/v$VERSION
+curl -fsSLO "$base/inhoused_${VERSION}_linux_$ARCH.tar.gz"
+curl -fsSLO "$base/checksums.sha512"
+sha512sum -c --ignore-missing checksums.sha512
+tar -xzf "inhoused_${VERSION}_linux_$ARCH.tar.gz"
+sha512sum inhoused > inhoused.sha512
+sudo bash install.sh example.com/cap/inhouse <enroll-client-id> <lifecycle-client-id>
+journalctl -fu inhoused   # wait for "control ready at https://deploy.<tailnet>.ts.net"
+```
+
+**5. Deploy something** from your laptop:
+
+```sh
+export INHOUSE_URL=https://deploy.<tailnet>.ts.net
+inhouse whoami            # your login and grants, including "role": "admin"
+curl -fsSLO https://raw.githubusercontent.com/quinnovator/inhouse/main/examples/hello.yaml
+inhouse deploy hello.yaml
+```
+
+Open `https://hello.<tailnet>.ts.net`: the page echoes your request,
+including the `Tailscale-User-Login` header inhouse added. Next, write a spec
+for your own app ([stack spec](docs/stack-spec.md),
+[more examples](examples)) or
+[connect an agent](docs/access.md).
+
 ## Documentation
 
 | | |
@@ -58,13 +127,6 @@ deploy hello: operation 3f6c… (idempotency key 9b1e…)
 | [Access, agents and MCP](docs/access.md) | Grants, roles, connecting agents, the MCP tools and HTTP API |
 | [Operating a host](docs/operating.md) | Provisioning, installing, upgrading, backups, restore, troubleshooting |
 | [Security](SECURITY.md) | Threat model and reporting |
-
-## Requirements
-
-- A Linux machine you can dedicate to inhouse, with a separate data disk. The
-  provided provisioning targets Fedora CoreOS with btrfs and rootless Podman.
-- A Tailscale tailnet with MagicDNS and HTTPS certificates enabled, and
-  permission to edit its policy and create OAuth clients.
 
 ## Limits
 
