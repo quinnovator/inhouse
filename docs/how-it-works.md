@@ -54,8 +54,8 @@ pass handles every service in parallel, one pass per service at a time:
 1. **Deleted** (tombstoned): stop and remove every pod, delete volumes, delete
    the tailnet device, then forget the service.
 2. **Expired** (ephemeral, TTL passed): tombstone it, then as above.
-3. **Live revision down** (reboot, crash, fresh restore): pull its pinned
-   images, start the pod, wait for health, then point the edge at it.
+3. **Live revision down** (reboot, crash, fresh restore): restart it as
+   described in [Keeping live services healthy](#keeping-live-services-healthy).
 4. **Operation running**: move it forward one step at a time (below).
 5. **Leftovers**: stop replaced revisions after their drain window, remove
    failed revisions' containers after 24 hours, and remove labelled pods that
@@ -107,6 +107,43 @@ is started again.
 refused with the running operation's ID, so callers wait instead of racing.
 Every mutating request accepts an idempotency key: retrying with the same key
 returns the same operation.
+
+## Keeping live services healthy
+
+Between passes, every live revision is probed every 10 seconds: each
+container's health check runs once, the same check a deploy waits on. A
+service reports how its live revision is doing in `list_services` and
+`get_service`:
+
+```json
+"health": "degraded",
+"health_reason": "3 health checks failed in a row, last: web: HTTP request failed",
+"restarts": 2,
+"restarted_at": 1791390884
+```
+
+A live revision is restarted when a container stops, or when three probes in
+a row fail, which catches an app that is still running but has hung:
+
+1. **Degrade.** Mark the service `degraded` with the reason, and point the
+   edge at nothing, so callers get a quick 503 instead of a hung request.
+2. **Restart.** Record the restart, stop the pod, start it again from its
+   pinned images, and wait for health exactly as a deploy does.
+3. **Recover.** Once healthy, mark the service `healthy` and point the edge
+   back at the pod. If the restart fails, the service stays degraded with
+   the failure as its reason.
+
+The first restart is immediate. A revision that keeps failing waits 10
+seconds before its second restart in a row, then twice as long each time, up
+to 5 minutes, so a crash-looping app doesn't hammer the host or the
+timeline. Once it stays healthy for 10 minutes, `restarts` returns to 0 and
+the next restart is immediate again. Each step is a `degraded`,
+`restarting` or `recovered` event.
+
+A restart only ever reruns the same revision. It never rolls back, and an
+operation in progress is unaffected: a deploy still cuts over only to a
+healthy candidate. While a recreate update has stopped the live revision on
+purpose, it is not probed or restarted.
 
 ## The edge
 

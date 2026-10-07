@@ -76,6 +76,16 @@ type Config struct {
 	Drain time.Duration
 	// HealthInterval separates health check attempts.
 	HealthInterval time.Duration
+	// ProbeInterval separates checks of each live revision while it serves.
+	ProbeInterval time.Duration
+	// ProbeFailures in a row restart a live revision.
+	ProbeFailures int
+	// RestartBackoff separates the first two restarts in a row; each further
+	// restart waits twice as long as the last, up to MaxRestartBackoff.
+	RestartBackoff, MaxRestartBackoff time.Duration
+	// RestartReset is how long a restarted revision must stay healthy before
+	// its next restart counts as the first again.
+	RestartReset time.Duration
 	// Interval is the reconciler's periodic pass.
 	Interval time.Duration
 	// FailedRetention keeps failed revisions' containers for their logs.
@@ -86,14 +96,19 @@ type Config struct {
 
 func DefaultConfig() Config {
 	return Config{
-		ControlName:     "deploy",
-		PortLow:         20000,
-		PortHigh:        29999,
-		Drain:           10 * time.Second,
-		HealthInterval:  2 * time.Second,
-		Interval:        30 * time.Second,
-		FailedRetention: 24 * time.Hour,
-		OrphanGrace:     10 * time.Minute,
+		ControlName:       "deploy",
+		PortLow:           20000,
+		PortHigh:          29999,
+		Drain:             10 * time.Second,
+		HealthInterval:    2 * time.Second,
+		ProbeInterval:     10 * time.Second,
+		ProbeFailures:     3,
+		RestartBackoff:    10 * time.Second,
+		MaxRestartBackoff: 5 * time.Minute,
+		RestartReset:      10 * time.Minute,
+		Interval:          30 * time.Second,
+		FailedRetention:   24 * time.Hour,
+		OrphanGrace:       10 * time.Minute,
 	}
 }
 
@@ -110,15 +125,22 @@ type Engine struct {
 
 	mu        sync.Mutex
 	busy      map[string]bool
+	missed    map[string]bool // a reconcile found the service busy
 	lastError map[string]string
+	failures  map[string]failures
 }
+
+// failures counts a live revision's failed probes in a row.
+type failures struct{ rev, n int }
 
 func New(cfg Config, s *store.Store, v *vault.Vault, r Runtime, vol Volumes, e Edges) *Engine {
 	return &Engine{
 		cfg: cfg, store: s, vault: v, runtime: r, volumes: vol, edges: e,
 		nudge:     make(chan struct{}, 1),
 		busy:      map[string]bool{},
+		missed:    map[string]bool{},
 		lastError: map[string]string{},
+		failures:  map[string]failures{},
 	}
 }
 

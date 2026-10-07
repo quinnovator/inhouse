@@ -12,16 +12,22 @@ import (
 )
 
 // Run reconciles on start, whenever nudged, and every Interval until ctx ends.
-// Services reconcile in parallel; each service has at most one pass running.
+// Between passes it probes every live revision each ProbeInterval. Services
+// reconcile in parallel; each service has at most one pass or probe running.
 func (e *Engine) Run(ctx context.Context) error {
 	ticker := time.NewTicker(e.cfg.Interval)
 	defer ticker.Stop()
+	probes := time.NewTicker(e.cfg.ProbeInterval)
+	defer probes.Stop()
 	defer e.wg.Wait()
 	e.Nudge()
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-probes.C:
+			e.probeAll(ctx)
+			continue
 		case <-ticker.C:
 		case <-e.nudge:
 		}
@@ -41,7 +47,7 @@ func (e *Engine) pass(ctx context.Context) {
 		return
 	}
 	for _, s := range services {
-		if !e.claim(s.Name) {
+		if !e.claim(s.Name, true) {
 			continue
 		}
 		e.wg.Add(1)
@@ -56,10 +62,39 @@ func (e *Engine) pass(ctx context.Context) {
 	}
 }
 
-func (e *Engine) claim(name string) bool {
+// probeAll checks every live revision that no pass is busy with.
+func (e *Engine) probeAll(ctx context.Context) {
+	services, err := e.store.Services(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			log.Printf("probe: %v", err)
+		}
+		return
+	}
+	for _, s := range services {
+		if s.Current == 0 || s.Deleted != 0 || !e.claim(s.Name, false) {
+			continue
+		}
+		e.wg.Add(1)
+		go func(name string) {
+			defer e.wg.Done()
+			defer e.release(name)
+			rev, err := e.probe(ctx, name)
+			if ctx.Err() == nil {
+				e.report(ctx, name, rev, "live_unavailable", err)
+			}
+		}(s.Name)
+	}
+}
+
+// claim reserves a service for one pass or probe. A reconcile that finds the
+// service busy runs again as soon as it is released, so a deploy recorded
+// during a restart doesn't wait for the next Interval.
+func (e *Engine) claim(name string, reconcile bool) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.busy[name] {
+		e.missed[name] = e.missed[name] || reconcile
 		return false
 	}
 	e.busy[name] = true
@@ -68,8 +103,13 @@ func (e *Engine) claim(name string) bool {
 
 func (e *Engine) release(name string) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
+	missed := e.missed[name]
 	delete(e.busy, name)
+	delete(e.missed, name)
+	e.mu.Unlock()
+	if missed {
+		e.Nudge()
+	}
 }
 
 // report logs an error and records it as an event, once per distinct error,
@@ -123,7 +163,7 @@ func (e *Engine) reconcile(ctx context.Context, name string) error {
 		if err != nil {
 			return err
 		}
-		e.report(ctx, name, live.Rev, "live_unavailable", e.keepLive(ctx, live))
+		e.report(ctx, name, live.Rev, "live_unavailable", e.keepLive(ctx, svc, live, false))
 	}
 	if hasOp {
 		if err = e.advance(ctx, op); err != nil {
@@ -141,41 +181,152 @@ func (e *Engine) replacing(ctx context.Context, o store.Operation) bool {
 	return err == nil && r.State == store.Starting && r.Spec.UpdateStrategy == spec.Recreate
 }
 
-// keepLive ensures the live revision runs and its edge points at it. In the
-// steady state this is two cheap checks. After a reboot, a crash or a fresh
-// restore, it pulls the pinned images, starts the pod, waits for health and
-// only then points the edge at it.
-func (e *Engine) keepLive(ctx context.Context, r store.Revision) error {
+// probe checks a service's live revision once, unless the service is being
+// deleted, has expired, or a recreate update stopped the live revision on
+// purpose: the next pass handles those.
+func (e *Engine) probe(ctx context.Context, name string) (rev int, err error) {
+	svc, err := e.store.Service(ctx, name)
+	if errors.Is(err, store.ErrNotFound) {
+		return 0, nil
+	}
+	if err != nil || svc.Current == 0 || svc.Deleted != 0 || (svc.Expires > 0 && svc.Expires <= time.Now().Unix()) {
+		return 0, err
+	}
+	op, err := e.store.RunningOperation(ctx, name)
+	if err == nil && e.replacing(ctx, op) {
+		return 0, nil
+	}
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return 0, err
+	}
+	live, err := e.store.Revision(ctx, name, svc.Current)
+	if err != nil {
+		return 0, err
+	}
+	return live.Rev, e.keepLive(ctx, svc, live, true)
+}
+
+// keepLive ensures the live revision runs, passes its health checks, and has
+// the edge pointed at it. In the steady state a pass makes two cheap checks
+// and a probe also runs every container's health check once. A revision
+// that stopped, or failed ProbeFailures probes in a row, is marked degraded
+// and restarted with backoff. After a daemon restart, a revision that is
+// still running gets traffic again once it passes health.
+func (e *Engine) keepLive(ctx context.Context, svc store.Service, r store.Revision, probe bool) error {
 	running, err := e.runtime.Running(ctx, r)
 	if err != nil {
 		return err
 	}
-	if running && e.edges.Port(r.Service) == r.Port {
+	switch {
+	case !running:
+		return e.restart(ctx, svc, r, "not every container is running")
+	case e.edges.Port(r.Service) != r.Port:
+		if svc.Health == store.Degraded {
+			return e.restart(ctx, svc, r, svc.HealthReason)
+		}
+		if err = e.health(ctx, r, time.Now()); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return e.restart(ctx, svc, r, err.Error())
+		}
+		return e.serve(ctx, r)
+	case !probe:
 		return nil
 	}
-	if !running {
-		e.edges.Clear(r.Service)
-		for _, name := range r.Spec.Order {
-			image := r.Spec.Containers[name].Image
-			resolved, err := e.runtime.Resolve(ctx, image)
-			if err != nil {
-				return err
-			}
-			if resolved != image {
-				return fmt.Errorf("registry no longer serves pinned image %s", image)
-			}
-		}
-		if err = e.runtime.Up(ctx, r); err != nil {
+	err = e.check(ctx, r)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if n := e.failed(r, err); n >= e.cfg.ProbeFailures {
+		return e.restart(ctx, svc, r, fmt.Sprintf("%d health checks failed in a row, last: %v", n, err))
+	}
+	if err == nil && svc.Restarts > 0 && time.Since(time.Unix(svc.RestartedAt, 0)) >= e.cfg.RestartReset {
+		return e.store.ClearRestarts(ctx, r)
+	}
+	return nil
+}
+
+// failed counts r's failed probes in a row, starting over after a pass.
+func (e *Engine) failed(r store.Revision, err error) int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	f := e.failures[r.Service]
+	if err == nil || f.rev != r.Rev {
+		f = failures{rev: r.Rev}
+	}
+	if err != nil {
+		f.n++
+	}
+	e.failures[r.Service] = f
+	return f.n
+}
+
+// restart marks the live revision degraded, takes it out of service, and
+// stops and restarts its pod once the backoff since its previous restart
+// has passed. Until then later probes and passes try again. The reason
+// shown in get_service is the first failure, or the last failed restart.
+func (e *Engine) restart(ctx context.Context, svc store.Service, r store.Revision, reason string) error {
+	e.edges.Clear(r.Service)
+	if svc.Health != store.Degraded {
+		if err := e.store.Degrade(ctx, r, reason); err != nil {
 			return err
 		}
 	}
-	if err = e.health(ctx, r, time.Now()); err != nil {
-		e.edges.Clear(r.Service)
+	if svc.Restarts > 0 && time.Since(time.Unix(svc.RestartedAt, 0)) < e.backoff(svc.Restarts) {
+		return nil
+	}
+	if err := e.store.Restarting(ctx, r, svc.Restarts+1); err != nil {
 		return err
 	}
-	if !running {
-		_ = e.store.Event(ctx, r.Service, r.Rev, "reconciler", "restored", fmt.Sprintf("r%d restarted and healthy", r.Rev))
+	e.failed(r, nil)
+	err := e.runtime.Stop(ctx, r)
+	if err == nil {
+		err = e.revive(ctx, r)
 	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if err != nil {
+		return e.store.Degrade(ctx, r, "restart failed: "+err.Error())
+	}
+	return e.store.Recover(ctx, r)
+}
+
+// backoff is the least time between restart n and the next one.
+func (e *Engine) backoff(n int) time.Duration {
+	d := e.cfg.RestartBackoff
+	for i := 1; i < n && d < e.cfg.MaxRestartBackoff; i++ {
+		d *= 2
+	}
+	return min(d, e.cfg.MaxRestartBackoff)
+}
+
+// revive starts a live revision's stopped pod from its pinned images, waits
+// for health, and only then points the edge at it.
+func (e *Engine) revive(ctx context.Context, r store.Revision) error {
+	e.edges.Clear(r.Service)
+	for _, name := range r.Spec.Order {
+		image := r.Spec.Containers[name].Image
+		resolved, err := e.runtime.Resolve(ctx, image)
+		if err != nil {
+			return err
+		}
+		if resolved != image {
+			return fmt.Errorf("registry no longer serves pinned image %s", image)
+		}
+	}
+	if err := e.runtime.Up(ctx, r); err != nil {
+		return err
+	}
+	if err := e.health(ctx, r, time.Now()); err != nil {
+		return err
+	}
+	return e.serve(ctx, r)
+}
+
+// serve points the service's edge at r.
+func (e *Engine) serve(ctx context.Context, r store.Revision) error {
 	dns, err := e.edges.Ensure(ctx, r.Service, store.KindOf(r.Spec), r.Spec.Expose)
 	if err != nil {
 		return err
@@ -360,7 +511,7 @@ func (e *Engine) fail(ctx context.Context, o store.Operation, r store.Revision, 
 		svc, err := e.store.Service(ctx, r.Service)
 		if err == nil && svc.Current > 0 && svc.Current != r.Rev {
 			if live, err := e.store.Revision(ctx, r.Service, svc.Current); err == nil {
-				e.report(ctx, r.Service, live.Rev, "live_unavailable", e.keepLive(ctx, live))
+				e.report(ctx, r.Service, live.Rev, "live_unavailable", e.revive(ctx, live))
 			}
 		}
 	}
@@ -384,26 +535,26 @@ func (e *Engine) health(ctx context.Context, r store.Revision, started time.Time
 		if ctx.Err() != nil {
 			return fmt.Errorf("health check timed out: %s", last)
 		}
-		healthy := true
-		for _, name := range r.Spec.StartOrder() {
-			if err := e.runtime.Check(ctx, r, name); err != nil {
-				healthy, last = false, name+": "+err.Error()
-				break
-			}
-		}
-		if healthy {
-			passes++
-			if passes == 3 {
-				return nil
-			}
-		} else {
-			passes = 0
+		if err := e.check(ctx, r); err != nil {
+			passes, last = 0, err.Error()
+		} else if passes++; passes == 3 {
+			return nil
 		}
 		select {
 		case <-ctx.Done():
 		case <-time.After(e.cfg.HealthInterval):
 		}
 	}
+}
+
+// check runs every container's health check once, sidecars first.
+func (e *Engine) check(ctx context.Context, r store.Revision) error {
+	for _, name := range r.Spec.StartOrder() {
+		if err := e.runtime.Check(ctx, r, name); err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 // cleanup stops revisions whose drain window ended, removes stopped pods and
@@ -492,6 +643,9 @@ func (e *Engine) removeOrphans(ctx context.Context) error {
 // teardown removes everything a tombstoned service owns, then the service.
 func (e *Engine) teardown(ctx context.Context, svc store.Service) error {
 	e.edges.Clear(svc.Name)
+	e.mu.Lock()
+	delete(e.failures, svc.Name)
+	e.mu.Unlock()
 	revs, err := e.store.Revisions(ctx, svc.Name)
 	if err != nil {
 		return err

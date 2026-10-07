@@ -66,7 +66,7 @@ permission checks:
 | Tool | Does |
 | --- | --- |
 | `whoami` | Your identity and exact grants |
-| `list_services`, `get_service` | What exists; revisions with pinned specs; recent events |
+| `list_services`, `get_service` | What exists and whether it is healthy; revisions with pinned specs; recent events |
 | `plan_deploy` | Diff a spec against the live revision, with warnings; changes nothing |
 | `deploy` | Start a deploy; returns an operation |
 | `wait_for_operation` | Block up to 120 s for the result, instead of polling |

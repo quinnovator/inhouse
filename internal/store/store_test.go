@@ -2,10 +2,12 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/quinnovator/inhouse/internal/spec"
 )
@@ -44,6 +46,59 @@ func TestReopenKeepsVersion(t *testing.T) {
 	_ = s.Close()
 	if v != len(migrations) {
 		t.Fatal(v)
+	}
+}
+
+func TestHealthMigrationAndTransitions(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "state.db")
+	db, err := sql.Open("sqlite", file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(schemaV1 + "; PRAGMA user_version=1;" +
+		"INSERT INTO services(name,kind,current_rev,created_by,created_at) VALUES('live','persistent',1,'me',0),('new','persistent',0,'me',0)"); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+	s, err := Open(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	ctx := context.Background()
+	live, _ := s.Service(ctx, "live")
+	fresh, _ := s.Service(ctx, "new")
+	if live.Health != Healthy || fresh.Health != "" {
+		t.Fatal("migration did not mark live services healthy", live, fresh)
+	}
+
+	r1 := Revision{Service: "live", Rev: 1}
+	if err = s.Degrade(ctx, r1, "web: HTTP 500"); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Restarting(ctx, r1, 1); err != nil {
+		t.Fatal(err)
+	}
+	live, _ = s.Service(ctx, "live")
+	if live.Health != Degraded || live.HealthReason != "web: HTTP 500" || live.Restarts != 1 || time.Since(time.Unix(live.RestartedAt, 0)) > time.Minute {
+		t.Fatal(live)
+	}
+	// A revision that is no longer live changes nothing and records nothing.
+	if err = s.Recover(ctx, Revision{Service: "live", Rev: 2}); err != nil {
+		t.Fatal(err)
+	}
+	events, _ := s.Events(ctx, EventQuery{Service: "live"})
+	if live, _ = s.Service(ctx, "live"); live.Health != Degraded || len(events) != 2 {
+		t.Fatal(live, events)
+	}
+	if err = s.Recover(ctx, r1); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.ClearRestarts(ctx, r1); err != nil {
+		t.Fatal(err)
+	}
+	if live, _ = s.Service(ctx, "live"); live.Health != Healthy || live.HealthReason != "" || live.Restarts != 0 {
+		t.Fatal(live)
 	}
 }
 
