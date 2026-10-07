@@ -184,4 +184,5 @@ from like a power cut.
 | Service shows `blog-1.<tailnet>` | A device named `blog` already existed; delete the stale one in the admin console, then delete and redeploy the service |
 | Delete is stuck | `reconcile_error` events; usually the lifecycle OAuth client |
 | 503 "no live revision" | The live revision is degraded and being restarted: `inhouse get SERVICE` shows `health_reason` and `restarts`; `degraded`, `restarting` and `live_unavailable` events say what failed |
+| A healthy service's address doesn't answer | Its HTTPS listener stopped and is being restarted: `listener_stopped`, `listener_restarted` and `live_unavailable` events say why and when |
 | Anything else | `journalctl -u inhoused` on the host |
