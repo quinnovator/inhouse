@@ -138,6 +138,9 @@ type fakeEdges struct {
 	mu        sync.Mutex
 	ports     map[string]int
 	nodes     map[string]bool
+	stopped   map[string]error // listeners that stopped serving
+	ensures   map[string]int
+	ensureErr error // Ensure fails, and a stopped listener stays stopped
 	failNext  bool
 	deletions []string
 }
@@ -145,8 +148,21 @@ type fakeEdges struct {
 func (f *fakeEdges) Ensure(_ context.Context, name string, _ store.Kind, _ string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.ensures[name]++
+	if f.ensureErr != nil {
+		if f.stopped[name] != nil {
+			f.stopped[name] = f.ensureErr
+		}
+		return "", f.ensureErr
+	}
 	f.nodes[name] = true
+	delete(f.stopped, name)
 	return name + ".example.ts.net", nil
+}
+func (f *fakeEdges) Stopped(name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.stopped[name]
 }
 func (f *fakeEdges) Switch(name string, port int) error {
 	f.mu.Lock()
@@ -200,7 +216,7 @@ func setup(t *testing.T) *harness {
 	h := &harness{
 		rt:    &fakeRuntime{running: map[string]bool{}, starts: map[string]int{}, stops: map[string]int{}, unhealthy: map[int]bool{}},
 		vols:  &fakeVolumes{snapshots: map[string]bool{}},
-		edges: &fakeEdges{ports: map[string]int{}, nodes: map[string]bool{}},
+		edges: &fakeEdges{ports: map[string]int{}, nodes: map[string]bool{}, stopped: map[string]error{}, ensures: map[string]int{}},
 		db:    db,
 	}
 	cfg := DefaultConfig()
@@ -487,6 +503,71 @@ func TestProbesRunBetweenPasses(t *testing.T) {
 		}
 	}
 	t.Fatalf("hung revision was not restarted by probes: %+v", h.service(t, "hello"))
+}
+
+func TestStoppedListenerIsRestartedWithBackoff(t *testing.T) {
+	h := setup(t)
+	ctx := context.Background()
+	h.deploy(t, stack("hello", "docker.io/traefik/whoami:1", ""), "")
+	port := h.edges.ports["hello"]
+	ensures := h.edges.ensures["hello"]
+	stop := func() {
+		h.edges.mu.Lock()
+		h.edges.stopped["hello"] = errors.New("tsnet: use of closed network connection")
+		h.edges.mu.Unlock()
+	}
+
+	// A pass brings it back without touching the healthy revision.
+	stop()
+	if err := h.reconcile(ctx, "hello"); err != nil {
+		t.Fatal(err)
+	}
+	s := h.service(t, "hello")
+	if h.edges.Stopped("hello") != nil || h.edges.ensures["hello"] != ensures+1 || h.edges.ports["hello"] != port {
+		t.Fatal("listener was not restarted")
+	}
+	if s.Health != store.Healthy || s.Restarts != 0 || h.rt.starts["hello/1"] != 1 || h.rt.stops["hello/1"] != 0 {
+		t.Fatalf("a stopped listener restarted the revision: %+v", s)
+	}
+	if got := h.kinds(t, "hello"); !strings.HasSuffix(got, "cutover succeeded listener_stopped listener_restarted") {
+		t.Fatal(got)
+	}
+
+	// It stops again at once, and its node can't come back: within the
+	// backoff a probe only reports it, however often it runs.
+	stop()
+	h.edges.ensureErr = errors.New("node hello did not come online")
+	for range 3 {
+		if _, err := h.probe(ctx, "hello"); err == nil || !strings.Contains(err.Error(), "use of closed network connection") {
+			t.Fatal(err)
+		}
+	}
+	if h.edges.ensures["hello"] != ensures+1 {
+		t.Fatal("restarted within the backoff")
+	}
+	h.cfg.RestartBackoff = time.Millisecond
+	if _, err := h.probe(ctx, "hello"); err == nil || !strings.Contains(err.Error(), "did not come online") {
+		t.Fatal(err)
+	}
+	if h.edges.ensures["hello"] != ensures+2 || h.edges.Stopped("hello") == nil {
+		t.Fatal("a failed restart was not retried, or not left stopped")
+	}
+
+	// The node comes back: the next restart after the backoff recovers.
+	h.edges.ensureErr = nil
+	time.Sleep(5 * time.Millisecond)
+	if _, err := h.probe(ctx, "hello"); err != nil {
+		t.Fatal(err)
+	}
+	if h.edges.Stopped("hello") != nil || h.edges.ports["hello"] != port || h.service(t, "hello").Health != store.Healthy {
+		t.Fatal("listener did not recover")
+	}
+	if got := h.kinds(t, "hello"); !strings.HasSuffix(got, "listener_restarted listener_stopped listener_stopped listener_restarted") {
+		t.Fatal(got)
+	}
+	if n := h.relistens["hello"].n; n != 3 {
+		t.Fatalf("%d restarts in a row", n)
+	}
 }
 
 func TestRecreateStopsWriterAndRestartsItOnFailure(t *testing.T) {
