@@ -183,5 +183,5 @@ from like a power cut.
 | 403 on everything | `inhouse whoami`; the grant's `dst` must be `tag:inhouse-control` and the capability name must match `-capability` |
 | Service shows `blog-1.<tailnet>` | A device named `blog` already existed; delete the stale one in the admin console, then delete and redeploy the service |
 | Delete is stuck | `reconcile_error` events; usually the lifecycle OAuth client |
-| 503 "no live revision" | The live revision is being restored or failed health after a restart; see `live_unavailable` events |
+| 503 "no live revision" | The live revision is degraded and being restarted: `inhouse get SERVICE` shows `health_reason` and `restarts`; `degraded`, `restarting` and `live_unavailable` events say what failed |
 | Anything else | `journalctl -u inhoused` on the host |

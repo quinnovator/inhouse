@@ -71,6 +71,14 @@ longest in the stack applies).
 | nothing, on the ingress | A TCP connection to the port succeeds |
 | nothing, on a sidecar | The container is still running |
 
+The same checks keep running after cutover, once every 10 seconds. If a
+container stops, or the checks fail three times in a row, the service is
+marked `degraded` and its pod is restarted, which must pass the checks again
+before it gets traffic back. A revision that keeps failing is restarted
+less and less often: the second restart in a row waits 10 seconds after the
+first, and each one after that waits twice as long, up to 5 minutes. The
+count starts over once the revision stays healthy for 10 minutes.
+
 ## What a deploy does with your spec
 
 The stored revision is your spec plus defaults, with every image pinned to an

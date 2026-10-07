@@ -372,6 +372,121 @@ func TestResumesAfterCrashAndRestartsAfterReboot(t *testing.T) {
 	if err = h.reconcile(context.Background(), "hello"); err != nil || h.rt.starts["hello/1"] != 2 {
 		t.Fatal("steady state restarted the pod")
 	}
+	// Daemon restart: the pod kept running, only the edge is gone. It gets
+	// traffic back after passing health, without a restart.
+	h.edges.Clear("hello")
+	if err = h.reconcile(context.Background(), "hello"); err != nil || h.rt.starts["hello/1"] != 2 || h.edges.ports["hello"] == 0 {
+		t.Fatal("a running live revision was restarted or not served")
+	}
+	if s := h.service(t, "hello"); s.Health != store.Healthy || s.Restarts != 1 {
+		t.Fatalf("%+v", s)
+	}
+}
+
+func (h *harness) kinds(t *testing.T, service string) string {
+	t.Helper()
+	events, err := h.db.Events(context.Background(), store.EventQuery{Service: service, Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := []string{}
+	for _, ev := range events {
+		out = append(out, ev.Kind)
+	}
+	return strings.Join(out, " ")
+}
+
+func TestHungLiveRevisionIsRestartedWithBackoff(t *testing.T) {
+	h := setup(t)
+	ctx := context.Background()
+	h.deploy(t, stack("hello", "docker.io/traefik/whoami:1", ""), "")
+	port := h.edges.ports["hello"]
+	probe := func() {
+		t.Helper()
+		if _, err := h.probe(ctx, "hello"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// It keeps running but stops answering.
+	h.rt.unhealthy[1] = true
+	probe()
+	probe()
+	if s := h.service(t, "hello"); s.Health != store.Healthy || h.rt.starts["hello/1"] != 1 || h.edges.ports["hello"] != port {
+		t.Fatal("restarted before ProbeFailures probes failed in a row")
+	}
+	probe()
+	s := h.service(t, "hello")
+	if h.rt.stops["hello/1"] != 1 || h.rt.starts["hello/1"] != 2 || h.edges.ports["hello"] != 0 {
+		t.Fatal("hung revision was not restarted and taken out of service")
+	}
+	if s.Health != store.Degraded || s.Restarts != 1 || !strings.HasPrefix(s.HealthReason, "restart failed: health check timed out") {
+		t.Fatalf("%+v", s)
+	}
+	detail, err := h.Get(admin(), "hello")
+	if err != nil || detail.Service.Health != store.Degraded {
+		t.Fatal("get_service does not show the service as degraded", err)
+	}
+
+	// Still within the backoff: nothing happens, however often it is probed.
+	h.rt.unhealthy[1] = false
+	h.cfg.RestartBackoff = time.Hour
+	probe()
+	if err = h.reconcile(ctx, "hello"); err != nil {
+		t.Fatal(err)
+	}
+	if h.rt.starts["hello/1"] != 2 || h.edges.ports["hello"] != 0 {
+		t.Fatal("restarted again within the backoff")
+	}
+
+	h.cfg.RestartBackoff = time.Millisecond
+	probe()
+	if s = h.service(t, "hello"); s.Health != store.Healthy || s.HealthReason != "" || s.Restarts != 2 || h.rt.starts["hello/1"] != 3 || h.edges.ports["hello"] != port {
+		t.Fatalf("did not recover: %+v", s)
+	}
+	if got := h.kinds(t, "hello"); !strings.HasSuffix(got, "cutover succeeded degraded restarting degraded restarting recovered") {
+		t.Fatal(got)
+	}
+
+	// Healthy for RestartReset: the next restart counts as the first again.
+	probe()
+	if h.service(t, "hello").Restarts != 2 {
+		t.Fatal("restarts cleared too early")
+	}
+	h.cfg.RestartReset = 0
+	probe()
+	if s = h.service(t, "hello"); s.Restarts != 0 || s.Health != store.Healthy {
+		t.Fatalf("%+v", s)
+	}
+}
+
+func TestRestartBackoffDoublesUpToTheMaximum(t *testing.T) {
+	h := setup(t)
+	got := []string{}
+	for n := 1; n <= 7; n++ {
+		got = append(got, h.backoff(n).String())
+	}
+	if fmt.Sprint(got) != "[10s 20s 40s 1m20s 2m40s 5m0s 5m0s]" {
+		t.Fatal(got)
+	}
+}
+
+func TestProbesRunBetweenPasses(t *testing.T) {
+	h := setup(t)
+	h.deploy(t, stack("hello", "docker.io/traefik/whoami:1", ""), "")
+	h.cfg.Interval, h.cfg.ProbeInterval = time.Hour, 5*time.Millisecond
+	h.rt.unhealthy[1] = true
+	// The hang clears once the pod is restarted.
+	h.rt.upHook = func(r store.Revision) { delete(h.rt.unhealthy, r.Rev) }
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error)
+	go func() { done <- h.Run(ctx) }()
+	defer func() { cancel(); <-done }()
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		if s := h.service(t, "hello"); s.Restarts == 1 && s.Health == store.Healthy {
+			return
+		}
+	}
+	t.Fatalf("hung revision was not restarted by probes: %+v", h.service(t, "hello"))
 }
 
 func TestRecreateStopsWriterAndRestartsItOnFailure(t *testing.T) {
@@ -393,6 +508,9 @@ func TestRecreateStopsWriterAndRestartsItOnFailure(t *testing.T) {
 	}
 	if !h.rt.running["db/1"] || h.rt.stops["db/1"] == 0 || h.edges.ports["db"] != r1.Port {
 		t.Fatal("old revision was not stopped and then restored")
+	}
+	if s := h.service(t, "db"); s.Health != store.Healthy || s.Restarts != 0 {
+		t.Fatalf("restoring a deliberately stopped writer counted as a failure: %+v", s)
 	}
 	if !h.vols.snapshots["db/2"] {
 		t.Fatal("no pre-deploy snapshot")

@@ -92,9 +92,9 @@ func NewMCPServer(e *engine.Engine, p authz.Principal) *mcp.Server {
 
 	add(server, e, p, "whoami", "Return your verified tailnet identity and exact capability grants.", readOnly,
 		func(ctx context.Context, _ empty) (any, error) { return e.Whoami(as(ctx)) })
-	add(server, e, p, "list_services", "List services you can see, with URL, kind, live revision and expiry.", readOnly,
+	add(server, e, p, "list_services", "List services you can see, with URL, kind, live revision, health and expiry.", readOnly,
 		func(ctx context.Context, _ empty) (any, error) { return e.List(as(ctx)) })
-	add(server, e, p, "get_service", "Get one service: its ten newest revisions (with full pinned specs) and five newest events.", readOnly,
+	add(server, e, p, "get_service", "Get one service: its health (healthy or degraded, with the reason and recent restarts), its ten newest revisions (with full pinned specs) and five newest events.", readOnly,
 		func(ctx context.Context, in named) (any, error) { return e.Get(as(ctx), in.Name) })
 	add(server, e, p, "plan_deploy", "Preview a deploy without changing anything: per-container images, env keys, secret names and volumes before and after, warnings, and whether you may apply it.", readOnly,
 		func(ctx context.Context, in deployQ) (any, error) {
@@ -127,7 +127,7 @@ func NewMCPServer(e *engine.Engine, p authz.Principal) *mcp.Server {
 		func(ctx context.Context, in logsQ) (any, error) {
 			return e.Logs(as(ctx), engine.LogQuery{Service: in.Name, Rev: in.Rev, Container: in.Container, Tail: in.Tail, Cursor: in.Cursor})
 		})
-	add(server, e, p, "get_events", "Read the attributed event timeline (deploys, health failures with log tails, cutovers, deletes), optionally for one service.", readOnly,
+	add(server, e, p, "get_events", "Read the attributed event timeline (deploys, health failures with log tails, cutovers, live revisions degrading, restarting and recovering, deletes), optionally for one service.", readOnly,
 		func(ctx context.Context, in eventsQ) (any, error) {
 			return e.Events(as(ctx), store.EventQuery{Service: in.Name, Since: in.Since, Limit: in.Limit})
 		})
