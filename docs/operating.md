@@ -53,7 +53,7 @@ On first boot the config:
 - formats the data disk as btrfs at `/var/lib/inhouse`
   (`compress=zstd,user_subvol_rm_allowed`),
 - creates the `inhouse` user (UID 1500) with lingering and a subordinate ID
-  range of 4,194,304 starting at 1,000,000 (64 services),
+  range of 4,194,304 starting at 1,000,000 (64 service slots),
 - configures rootless Podman storage and a mode-0600 API socket,
 - layers Tailscale, masks Docker, and sets OS updates to Sunday 04:00,
 - loads a bootstrap nftables firewall that drops everything except loopback,
@@ -166,7 +166,9 @@ from like a power cut.
    scratch directory.
 3. `restore.sh <db> <restic-restore-dir> <age-key>` places the database,
    node identities, age key and volumes, preserving numeric ownership and
-   ACLs. It refuses to overwrite anything.
+   ACLs. It refuses to overwrite anything, and skips (with a warning) volume
+   data of services that aren't live in the restored database or whose ID
+   slot has since passed to another service.
 4. Install the OAuth secrets and run `install.sh`. Every service comes back
    with the same name, revision, data and secrets; images are pulled by
    their pinned digests. Services whose images come from your own registry

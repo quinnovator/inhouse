@@ -39,6 +39,42 @@ func TestRefusesUnownedPodBeforeAnyMutation(t *testing.T) {
 	}
 }
 
+func TestLeftoverSecretsAreRemovedByLabel(t *testing.T) {
+	var deleted []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "DELETE":
+			deleted = append(deleted, strings.TrimPrefix(r.URL.Path, apiPrefix+"/secrets/"))
+		case strings.HasSuffix(r.URL.Path, "/secrets/json"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[
+				{"ID":"a1","Spec":{"Name":"svc-preview-x-r1-db","Labels":{"inhouse":"1","inhouse.service":"preview-x","inhouse.revision":"1","inhouse.spec":"h1"}}},
+				{"ID":"a2","Spec":{"Name":"svc-preview-x-r2-db","Labels":{"inhouse":"1","inhouse.service":"preview-x","inhouse.revision":"2","inhouse.spec":"h2"}}},
+				{"ID":"b1","Spec":{"Name":"svc-blog-r1-db","Labels":{"inhouse":"1","inhouse.service":"blog","inhouse.revision":"1","inhouse.spec":"h1"}}},
+				{"ID":"c1","Spec":{"Name":"svc-preview-x-r1-db","Labels":{"inhouse.service":"preview-x"}}},
+				{"ID":"c2","Spec":{"Name":"someone-elses","Labels":{"inhouse":"1","inhouse.service":"preview-x"}}}
+			]`))
+		default: // the orphan pod is already gone
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	p := &Podman{client: &http.Client{Transport: rewriteTransport{server.URL, http.DefaultTransport}}}
+	if err := p.RemoveOrphan(context.Background(), store.Revision{Service: "preview-x", Rev: 1, Hash: "h1"}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(deleted, ",") != "a1" {
+		t.Fatal("orphan removal deleted", deleted)
+	}
+	deleted = nil
+	if err := p.RemoveServiceSecrets(context.Background(), "preview-x"); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(deleted, ",") != "a1,a2" {
+		t.Fatal("service sweep deleted", deleted)
+	}
+}
+
 type rewriteTransport struct {
 	base string
 	next http.RoundTripper

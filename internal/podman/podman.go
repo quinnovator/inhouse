@@ -470,11 +470,12 @@ func (p *Podman) Pods(ctx context.Context) ([]store.Revision, error) {
 	return out, nil
 }
 
-// RemoveOrphan force-removes a labelled pod after re-verifying its labels.
+// RemoveOrphan force-removes a labelled pod after re-verifying its labels,
+// then the secrets labelled for the same revision.
 func (p *Podman) RemoveOrphan(ctx context.Context, r store.Revision) error {
 	pod, err := p.inspectPod(ctx, r)
 	if isMissing(err) {
-		return nil
+		return p.removeLabelled(ctx, r.Service, func(l map[string]string) bool { return owned(l, r) })
 	}
 	if err != nil {
 		return err
@@ -490,5 +491,8 @@ func (p *Podman) RemoveOrphan(ctx context.Context, r store.Revision) error {
 			return err
 		}
 	}
-	return p.call(ctx, "DELETE", "/pods/"+PodName(r)+"?force=true", nil, nil)
+	if err = p.call(ctx, "DELETE", "/pods/"+PodName(r)+"?force=true", nil, nil); err != nil && !isMissing(err) {
+		return err
+	}
+	return p.removeLabelled(ctx, r.Service, func(l map[string]string) bool { return owned(l, r) })
 }

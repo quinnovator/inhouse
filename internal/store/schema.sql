@@ -72,8 +72,9 @@ CREATE TABLE secret_versions (
   ciphertext BLOB NOT NULL
 );
 
--- Each service's fixed slice of subordinate IDs. Slots are never reused:
--- retained volumes and backups keep their numeric ownership.
+-- Each service's fixed slice of subordinate IDs. Persistent services' slots
+-- are never reused: retained volumes and backups keep their numeric
+-- ownership. A deleted ephemeral service's slot is freed for reuse.
 CREATE TABLE namespaces (
   service TEXT PRIMARY KEY,
   slot    INTEGER NOT NULL UNIQUE
