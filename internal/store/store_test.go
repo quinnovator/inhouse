@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/quinnovator/inhouse/internal/spec"
@@ -132,5 +133,39 @@ func TestNamespaceSlotsAreStableAndBounded(t *testing.T) {
 	}
 	if _, err := s.Namespace(ctx, "c", 2); err == nil {
 		t.Fatal("pool exhaustion not detected")
+	}
+}
+
+func TestEphemeralSlotsAreReused(t *testing.T) {
+	s := open(t)
+	ctx := context.Background()
+	ttl := "1h"
+	preview := stack(t, "preview-a")
+	preview.TTL = &ttl
+	for i, st := range []spec.Stack{stack(t, "blog"), preview, stack(t, "wiki")} {
+		if _, err := s.Record(ctx, Request{Stack: st, Kind: Deploy, RequestHash: st.Name, Actor: "me", PortLow: 20000, PortHigh: 20009}); err != nil {
+			t.Fatal(err)
+		}
+		if slot, err := s.Namespace(ctx, st.Name, 4); err != nil || slot != i {
+			t.Fatal(st.Name, slot, err)
+		}
+	}
+	for _, name := range []string{"blog", "preview-a"} {
+		if _, err := s.Tombstone(ctx, name, "me", "", "delete "+name, true); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.FinishDelete(ctx, name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The deleted preview's slot 1 is reused; the deleted persistent
+	// service's slot 0 is not, since its trashed data keeps that ownership.
+	for _, want := range []int{1, 3} {
+		if slot, err := s.Namespace(ctx, "next-"+strconv.Itoa(want), 4); err != nil || slot != want {
+			t.Fatal(want, slot, err)
+		}
+	}
+	if _, err := s.Namespace(ctx, "full", 4); err == nil {
+		t.Fatal("allocated past the pool")
 	}
 }

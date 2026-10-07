@@ -4,7 +4,9 @@
 // Each service gets a durable 65536-ID slot in it, shared by all of its
 // revisions, so container root never maps to the inhouse user (which owns
 // the database, keys and node state) and volume ownership stays stable
-// across deploys. Slots are never reused.
+// across deploys. A persistent service's slot is never reused (its trashed
+// volumes and backups keep their numeric ownership); a deleted ephemeral
+// service's slot is, since its data is deleted with it.
 package userns
 
 import (

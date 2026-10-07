@@ -137,8 +137,9 @@ for your own app ([stack spec](docs/stack-spec.md),
   briefly interrupts HTTPS for every service (containers keep running).
 - Services with volumes update by stopping the old revision first, so they
   see a few seconds of downtime per deploy.
-- The default subordinate ID range supports 64 distinct services over the
-  host's lifetime.
+- The default subordinate ID range supports 64 services. A persistent
+  service holds its slot for the host's lifetime, even after deletion; an
+  ephemeral one frees its slot when it is deleted.
 
 ## Development
 

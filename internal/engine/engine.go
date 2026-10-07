@@ -35,7 +35,10 @@ type Runtime interface {
 	// Pods lists every labelled pod as the revision it claims to be
 	// (Service, Rev, Hash and Created are set).
 	Pods(ctx context.Context) ([]store.Revision, error)
+	// RemoveOrphan removes a labelled pod with no revision, and its secrets.
 	RemoveOrphan(ctx context.Context, r store.Revision) error
+	// RemoveServiceSecrets removes every secret labelled for the service.
+	RemoveServiceSecrets(ctx context.Context, service string) error
 }
 
 // Volumes manages service volumes and their snapshots.
