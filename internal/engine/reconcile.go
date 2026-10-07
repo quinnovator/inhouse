@@ -507,6 +507,20 @@ func (e *Engine) teardown(ctx context.Context, svc store.Service) error {
 			return err
 		}
 	}
+	// Also remove labelled pods with no revision row: once an ephemeral
+	// service is gone its ID slot is reused, and no pod may outlive it.
+	pods, err := e.runtime.Pods(ctx)
+	if err != nil {
+		return err
+	}
+	for _, pod := range pods {
+		if pod.Service != svc.Name {
+			continue
+		}
+		if err = e.runtime.RemoveOrphan(ctx, pod); err != nil {
+			return err
+		}
+	}
 	if err = e.volumes.Delete(ctx, svc); err != nil {
 		return err
 	}

@@ -622,9 +622,13 @@ func (s *Store) Tombstone(ctx context.Context, name, actor, key, requestHash str
 }
 
 // FinishDelete removes a torn-down service and its revisions. Events and
-// operations remain as history.
+// operations remain as history. An ephemeral service's ID slot is released:
+// its volumes and snapshots are already gone, so no data keeps its ownership.
 func (s *Store) FinishDelete(ctx context.Context, name string) error {
 	return s.write(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.Exec("DELETE FROM namespaces WHERE service=? AND EXISTS (SELECT 1 FROM services WHERE name=? AND kind='ephemeral' AND deleted_at IS NOT NULL)", name, name); err != nil {
+			return err
+		}
 		if _, err := tx.Exec("DELETE FROM revisions WHERE service=?", name); err != nil {
 			return err
 		}
@@ -674,8 +678,9 @@ func (s *Store) Events(ctx context.Context, q EventQuery) ([]Event, error) {
 
 // ---- namespaces ----
 
-// Namespace returns the service's subordinate-ID slot, allocating the next
-// one on first use. Slots are never recycled.
+// Namespace returns the service's subordinate-ID slot, allocating the lowest
+// free one on first use. Persistent services keep their slot for the host's
+// lifetime; deleted ephemeral services release theirs (see FinishDelete).
 func (s *Store) Namespace(ctx context.Context, service string, slots int) (int, error) {
 	var slot int
 	err := s.write(ctx, func(tx *sql.Tx) error {
@@ -683,7 +688,7 @@ func (s *Store) Namespace(ctx context.Context, service string, slots int) (int, 
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		if err = tx.QueryRow("SELECT COALESCE(MAX(slot)+1,0) FROM namespaces").Scan(&slot); err != nil {
+		if err = tx.QueryRow("SELECT MIN(slot) FROM (SELECT 0 AS slot UNION ALL SELECT slot+1 FROM namespaces) WHERE slot NOT IN (SELECT slot FROM namespaces)").Scan(&slot); err != nil {
 			return err
 		}
 		if slot >= slots {

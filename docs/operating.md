@@ -53,7 +53,7 @@ On first boot the config:
 - formats the data disk as btrfs at `/var/lib/inhouse`
   (`compress=zstd,user_subvol_rm_allowed`),
 - creates the `inhouse` user (UID 1500) with lingering and a subordinate ID
-  range of 4,194,304 starting at 1,000,000 (64 services),
+  range of 4,194,304 starting at 1,000,000 (64 service slots),
 - configures rootless Podman storage and a mode-0600 API socket,
 - layers Tailscale, masks Docker, and sets OS updates to Sunday 04:00,
 - loads a bootstrap nftables firewall that drops everything except loopback,

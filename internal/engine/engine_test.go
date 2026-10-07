@@ -24,6 +24,8 @@ type fakeRuntime struct {
 	unhealthy map[int]bool // revisions whose checks fail
 	logs      string
 	upHook    func(store.Revision)
+	strays    []store.Revision // labelled pods with no revision row
+	orphans   []string         // pods RemoveOrphan removed
 }
 
 func key(r store.Revision) string { return fmt.Sprintf("%s/%d", r.Service, r.Rev) }
@@ -82,8 +84,17 @@ func (f *fakeRuntime) Remove(_ context.Context, r store.Revision) error {
 func (f *fakeRuntime) Logs(context.Context, store.Revision, string, int) (string, error) {
 	return f.logs, nil
 }
-func (f *fakeRuntime) Pods(context.Context) ([]store.Revision, error)     { return nil, nil }
-func (f *fakeRuntime) RemoveOrphan(context.Context, store.Revision) error { return nil }
+func (f *fakeRuntime) Pods(context.Context) ([]store.Revision, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]store.Revision(nil), f.strays...), nil
+}
+func (f *fakeRuntime) RemoveOrphan(_ context.Context, r store.Revision) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.orphans = append(f.orphans, key(r))
+	return nil
+}
 
 type fakeVolumes struct {
 	snapshots map[string]bool
@@ -410,9 +421,14 @@ func TestDeleteAndExpiry(t *testing.T) {
 	if _, err = h.Deploy(admin(), stack("hello", "docker.io/traefik/whoami:2", ""), ""); err == nil {
 		t.Fatal("deploy accepted while deleting")
 	}
+	h.rt.strays = []store.Revision{{Service: "hello", Rev: 7}, {Service: "other", Rev: 1}}
 	if o = h.run(t, o, nil); o.State != store.Succeeded || len(h.rt.running) != 0 || len(h.edges.deletions) != 1 {
 		t.Fatalf("%+v %v", o, h.rt.running)
 	}
+	if fmt.Sprint(h.rt.orphans) != "[hello/7]" {
+		t.Fatal("teardown left or overreached on stray pods:", h.rt.orphans)
+	}
+	h.rt.strays = nil
 	if _, err = h.db.Service(context.Background(), "hello"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatal("service row survived delete")
 	}

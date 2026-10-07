@@ -160,9 +160,11 @@ Every service gets its own fixed slice of 65,536 subordinate user IDs, shared
 by all its revisions. Container root maps into that slice, never to the
 `inhouse` user that owns the database, keys and node state, and never to
 another service's slice. A container escape lands as an unprivileged,
-per-service ID. Slices are never reused (old volumes and backups keep their
-numeric ownership), so the default range supports 64 services over the
-host's lifetime.
+per-service ID. A persistent service's slice is never reused, even after it
+is deleted, because its trashed volumes and backups keep their numeric
+ownership. An ephemeral service's data is deleted with it, so its slice is
+freed for the next service. The default range holds 64 slices: persistent
+services ever created plus ephemeral services alive at once.
 
 ## Data
 
