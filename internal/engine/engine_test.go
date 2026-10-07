@@ -570,6 +570,37 @@ func TestStoppedListenerIsRestartedWithBackoff(t *testing.T) {
 	}
 }
 
+func TestRevisionIsProbedWhileListenerIsDown(t *testing.T) {
+	h := setup(t)
+	ctx := context.Background()
+	h.deploy(t, stack("hello", "docker.io/traefik/whoami:1", ""), "")
+	port := h.edges.ports["hello"]
+	h.edges.stopped["hello"] = errors.New("tsnet: use of closed network connection")
+	h.edges.ensureErr = errors.New("node hello did not come online")
+	// The app hangs while its listener can't come back; a restart clears it.
+	h.rt.unhealthy[1] = true
+	h.rt.upHook = func(r store.Revision) { delete(h.rt.unhealthy, r.Rev) }
+	for range h.cfg.ProbeFailures - 1 {
+		if _, err := h.probe(ctx, "hello"); err == nil {
+			t.Fatal("a stopped listener was not reported")
+		}
+	}
+	if h.rt.stops["hello/1"] != 0 {
+		t.Fatal("restarted before ProbeFailures probes failed in a row")
+	}
+	h.edges.ensureErr = nil
+	if _, err := h.probe(ctx, "hello"); err != nil {
+		t.Fatal(err)
+	}
+	s := h.service(t, "hello")
+	if s.Restarts != 1 || s.Health != store.Healthy || h.rt.starts["hello/1"] != 2 {
+		t.Fatalf("hung app was not restarted while its listener was down: %+v", s)
+	}
+	if h.edges.Stopped("hello") != nil || h.edges.ports["hello"] != port {
+		t.Fatal("listener did not come back with the restarted revision")
+	}
+}
+
 func TestRecreateStopsWriterAndRestartsItOnFailure(t *testing.T) {
 	h := setup(t)
 	first := h.deploy(t, withVolume(stack("db", "docker.io/library/postgres:17", "")), "")
