@@ -136,6 +136,7 @@ func (v *fakeVolumes) Delete(_ context.Context, s store.Service) error {
 
 type fakeEdges struct {
 	mu        sync.Mutex
+	clears    int
 	ports     map[string]int
 	nodes     map[string]bool
 	failNext  bool
@@ -166,6 +167,7 @@ func (f *fakeEdges) Port(name string) int {
 func (f *fakeEdges) Clear(name string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.clears++
 	delete(f.ports, name)
 }
 func (f *fakeEdges) Delete(_ context.Context, name string, _ store.Kind) error {
@@ -514,6 +516,42 @@ func TestRecreateStopsWriterAndRestartsItOnFailure(t *testing.T) {
 	}
 	if !h.vols.snapshots["db/2"] {
 		t.Fatal("no pre-deploy snapshot")
+	}
+}
+
+func TestFailedRecreateLeavesARunningWriterServing(t *testing.T) {
+	h := setup(t)
+	h.deploy(t, withVolume(stack("db", "docker.io/library/postgres:17", "")), "")
+	port, clears := h.edges.ports["db"], h.edges.clears
+	// The candidate fails while pinning, before the writer is stopped.
+	o := h.deploy(t, withVolume(stack("db", "docker.io/library/missing:18", "")), "")
+	if o.State != store.OpFailed || h.rt.stops["db/1"] != 0 || h.edges.ports["db"] != port || h.edges.clears != clears {
+		t.Fatalf("a writer that never stopped lost traffic: %+v", o)
+	}
+}
+
+func TestFailedRecreateRecoversADegradedWriter(t *testing.T) {
+	h := setup(t)
+	ctx := context.Background()
+	h.deploy(t, withVolume(stack("db", "docker.io/library/postgres:17", "")), "")
+	r1, _ := h.db.Revision(ctx, "db", 1)
+	h.rt.unhealthy[1] = true
+	for range 3 {
+		if _, err := h.probe(ctx, "db"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if h.service(t, "db").Health != store.Degraded {
+		t.Fatal("not degraded")
+	}
+	h.rt.unhealthy[1] = false
+	h.cfg.RestartBackoff = time.Hour
+	h.rt.unhealthy[2] = true
+	if o := h.deploy(t, withVolume(stack("db", "docker.io/library/postgres:18.1", "")), ""); o.State != store.OpFailed {
+		t.Fatalf("%+v", o)
+	}
+	if s := h.service(t, "db"); s.Health != store.Healthy || h.edges.ports["db"] != r1.Port {
+		t.Fatalf("restored writer serves but is not healthy: %+v", s)
 	}
 }
 

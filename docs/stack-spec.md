@@ -77,7 +77,8 @@ marked `degraded` and its pod is restarted, which must pass the checks again
 before it gets traffic back. A revision that keeps failing is restarted
 less and less often: the second restart in a row waits 10 seconds after the
 first, and each one after that waits twice as long, up to 5 minutes. The
-count starts over once the revision stays healthy for 10 minutes.
+count starts over once the revision goes 10 minutes without needing a
+restart.
 
 ## What a deploy does with your spec
 

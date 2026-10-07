@@ -241,7 +241,15 @@ func (e *Engine) keepLive(ctx context.Context, svc store.Service, r store.Revisi
 	if n := e.failed(r, err); n >= e.cfg.ProbeFailures {
 		return e.restart(ctx, svc, r, fmt.Sprintf("%d health checks failed in a row, last: %v", n, err))
 	}
-	if err == nil && svc.Restarts > 0 && time.Since(time.Unix(svc.RestartedAt, 0)) >= e.cfg.RestartReset {
+	if err != nil {
+		return nil
+	}
+	if svc.Health == store.Degraded {
+		if err = e.store.Recover(ctx, r); err != nil {
+			return err
+		}
+	}
+	if svc.Restarts > 0 && time.Since(time.Unix(svc.RestartedAt, 0)) >= e.cfg.RestartReset {
 		return e.store.ClearRestarts(ctx, r)
 	}
 	return nil
@@ -300,6 +308,23 @@ func (e *Engine) backoff(n int) time.Duration {
 		d *= 2
 	}
 	return min(d, e.cfg.MaxRestartBackoff)
+}
+
+// restore brings back a live revision that a failed recreate update stopped
+// on purpose. If the update failed before stopping it, it keeps serving
+// untouched.
+func (e *Engine) restore(ctx context.Context, r store.Revision) error {
+	running, err := e.runtime.Running(ctx, r)
+	if err != nil {
+		return err
+	}
+	if running && e.edges.Port(r.Service) == r.Port {
+		return nil
+	}
+	if err = e.revive(ctx, r); err != nil {
+		return err
+	}
+	return e.store.Recover(ctx, r)
 }
 
 // revive starts a live revision's stopped pod from its pinned images, waits
@@ -511,7 +536,7 @@ func (e *Engine) fail(ctx context.Context, o store.Operation, r store.Revision, 
 		svc, err := e.store.Service(ctx, r.Service)
 		if err == nil && svc.Current > 0 && svc.Current != r.Rev {
 			if live, err := e.store.Revision(ctx, r.Service, svc.Current); err == nil {
-				e.report(ctx, r.Service, live.Rev, "live_unavailable", e.revive(ctx, live))
+				e.report(ctx, r.Service, live.Rev, "live_unavailable", e.restore(ctx, live))
 			}
 		}
 	}

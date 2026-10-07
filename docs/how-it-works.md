@@ -136,8 +136,9 @@ a row fail, which catches an app that is still running but has hung:
 The first restart is immediate. A revision that keeps failing waits 10
 seconds before its second restart in a row, then twice as long each time, up
 to 5 minutes, so a crash-looping app doesn't hammer the host or the
-timeline. Once it stays healthy for 10 minutes, `restarts` returns to 0 and
-the next restart is immediate again. Each step is a `degraded`,
+timeline. Once it goes 10 minutes without needing a restart (occasional
+failed probes short of three in a row don't count), `restarts` returns to 0
+and the next restart is immediate again. Each step is a `degraded`,
 `restarting` or `recovered` event.
 
 A restart only ever reruns the same revision. It never rolls back, and an

@@ -83,8 +83,8 @@ type Config struct {
 	// RestartBackoff separates the first two restarts in a row; each further
 	// restart waits twice as long as the last, up to MaxRestartBackoff.
 	RestartBackoff, MaxRestartBackoff time.Duration
-	// RestartReset is how long a restarted revision must stay healthy before
-	// its next restart counts as the first again.
+	// RestartReset is how long a restarted revision must go without needing
+	// another restart before its next one counts as the first again.
 	RestartReset time.Duration
 	// Interval is the reconciler's periodic pass.
 	Interval time.Duration

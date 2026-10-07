@@ -401,11 +401,11 @@ func (s *Store) ReleasePort(ctx context.Context, r Revision) error {
 
 // ---- health ----
 
-// setLive updates the service row only while r is its live revision, and
-// records the event only if it did.
-func (s *Store) setLive(ctx context.Context, r Revision, kind, message, set string, args ...any) error {
+// setLive updates the service row only while r is its live revision (and
+// cond holds), and records the event only if it did.
+func (s *Store) setLive(ctx context.Context, r Revision, kind, message, set, cond string, args ...any) error {
 	return s.write(ctx, func(tx *sql.Tx) error {
-		res, err := tx.Exec("UPDATE services SET "+set+" WHERE name=? AND current_rev=? AND deleted_at IS NULL", append(args, r.Service, r.Rev)...)
+		res, err := tx.Exec("UPDATE services SET "+set+" WHERE name=? AND current_rev=? AND deleted_at IS NULL"+cond, append(args, r.Service, r.Rev)...)
 		if err != nil {
 			return err
 		}
@@ -419,25 +419,26 @@ func (s *Store) setLive(ctx context.Context, r Revision, kind, message, set stri
 // Degrade records that the live revision r is failing, and why.
 func (s *Store) Degrade(ctx context.Context, r Revision, reason string) error {
 	return s.setLive(ctx, r, "degraded", fmt.Sprintf("r%d is unhealthy: %s", r.Rev, reason),
-		"health='degraded',health_reason=?", reason)
+		"health='degraded',health_reason=?", "", reason)
 }
 
 // Restarting records a restart of the live revision r before it happens, so
 // the backoff survives a daemon restart.
 func (s *Store) Restarting(ctx context.Context, r Revision, restarts int) error {
 	return s.setLive(ctx, r, "restarting", fmt.Sprintf("restarting r%d (restart %d in a row)", r.Rev, restarts),
-		"restarts=?,restarted_at=?", restarts, now())
+		"restarts=?,restarted_at=?", "", restarts, now())
 }
 
 // Recover records that the live revision r passes its health checks again.
+// It does nothing unless r is degraded.
 func (s *Store) Recover(ctx context.Context, r Revision) error {
 	return s.setLive(ctx, r, "recovered", fmt.Sprintf("r%d is healthy and serving again", r.Rev),
-		"health='healthy',health_reason=''")
+		"health='healthy',health_reason=''", " AND health='degraded'")
 }
 
 // ClearRestarts ends a run of restarts once the live revision stays healthy.
 func (s *Store) ClearRestarts(ctx context.Context, r Revision) error {
-	return s.setLive(ctx, r, "", "", "restarts=0")
+	return s.setLive(ctx, r, "", "", "restarts=0", "")
 }
 
 // ---- operations ----
