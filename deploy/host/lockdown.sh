@@ -10,7 +10,10 @@ tailscale ip -4 >/dev/null
 rules=/etc/inhouse/firewall-locked.nft
 active=/etc/inhouse/firewall-active.nft
 [[ $(head -n 1 "$rules") == 'table inet inhouse {}' ]]
-! grep -q 'tcp dport 22' "$rules"
+if grep -q 'tcp dport 22' "$rules"; then
+  echo "$rules still allows tcp dport 22; refusing to lock down" >&2
+  exit 1
+fi
 nft -c -f "$rules"
 previous=$(readlink "$active")
 # Stage the persistent selector first. Restore it if the atomic nft load fails.

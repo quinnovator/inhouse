@@ -28,7 +28,12 @@ tailscale ip -4
 nft list table inet inhouse
 if [[ ${1:-} == --locked ]]; then
   [[ $(readlink /etc/inhouse/firewall-active.nft) == /etc/inhouse/firewall-locked.nft ]]
-  ! nft list table inet inhouse | grep -q 'tcp dport 22'
+  # Capture first: under pipefail, grep -q exiting early can SIGPIPE nft and mask a match.
+  ruleset=$(nft list table inet inhouse)
+  if grep -q 'tcp dport 22' <<<"$ruleset"; then
+    echo 'Locked firewall still allows tcp dport 22' >&2
+    exit 1
+  fi
   echo 'Persistent locked firewall selected; bootstrap public SSH rule absent.'
 fi
 echo 'External TCP scan and two independent tailnet SSH sessions must be verified from the operator machine.'

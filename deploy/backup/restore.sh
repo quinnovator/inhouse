@@ -11,7 +11,10 @@ age_key=${3:?Out-of-band age identity required}
 root_dir=/var/lib/inhouse
 [[ -f $database && -f $age_key ]]
 [[ $(findmnt -no FSTYPE --target "$root_dir") == btrfs ]]
-! systemctl is-active --quiet inhoused.service
+if systemctl is-active --quiet inhoused.service; then
+  echo 'inhoused.service is running; stop it before restoring' >&2
+  exit 1
+fi
 empty_or_absent() { [[ ! -e $1 ]] || { [[ -d $1 && ! -L $1 && -z $(ls -A "$1") ]]; }; }
 [[ ! -e $root_dir/state/inhouse.db && ! -e $root_dir/keys/age.key ]]
 empty_or_absent "$root_dir/ts"
