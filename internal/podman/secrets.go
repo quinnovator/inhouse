@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/quinnovator/inhouse/internal/spec"
 	"github.com/quinnovator/inhouse/internal/store"
@@ -86,4 +87,39 @@ func (p *Podman) removeSecrets(ctx context.Context, r store.Revision) error {
 		}
 	}
 	return nil
+}
+
+// removeLabelled deletes every inhouse secret of service that match accepts.
+// It decides from labels alone, so it finds secrets whose pod or revision row
+// is already gone.
+func (p *Podman) removeLabelled(ctx context.Context, service string, match func(map[string]string) bool) error {
+	var secrets []struct {
+		ID   string
+		Spec struct {
+			Name   string
+			Labels map[string]string
+		}
+	}
+	if err := p.call(ctx, "GET", "/secrets/json", nil, &secrets); err != nil {
+		return err
+	}
+	for _, sec := range secrets {
+		l := sec.Spec.Labels
+		if l[LabelOwner] != "1" || l[LabelService] != service || !strings.HasPrefix(sec.Spec.Name, "svc-"+service+"-r") || !match(l) {
+			continue
+		}
+		if err := p.call(ctx, "DELETE", "/secrets/"+sec.ID, nil, nil); err != nil && !isMissing(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+// RemoveServiceSecrets deletes every secret labelled for service, whatever
+// revision it claims. Teardown uses it so no secret outlives its service.
+func (p *Podman) RemoveServiceSecrets(ctx context.Context, service string) error {
+	if !spec.ValidName(service) {
+		return errors.New("invalid service name")
+	}
+	return p.removeLabelled(ctx, service, func(map[string]string) bool { return true })
 }

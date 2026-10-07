@@ -26,6 +26,7 @@ type fakeRuntime struct {
 	upHook    func(store.Revision)
 	strays    []store.Revision // labelled pods with no revision row
 	orphans   []string         // pods RemoveOrphan removed
+	swept     []string         // services whose secrets were swept
 }
 
 func key(r store.Revision) string { return fmt.Sprintf("%s/%d", r.Service, r.Rev) }
@@ -93,6 +94,12 @@ func (f *fakeRuntime) RemoveOrphan(_ context.Context, r store.Revision) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.orphans = append(f.orphans, key(r))
+	return nil
+}
+func (f *fakeRuntime) RemoveServiceSecrets(_ context.Context, service string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.swept = append(f.swept, service)
 	return nil
 }
 
@@ -425,8 +432,8 @@ func TestDeleteAndExpiry(t *testing.T) {
 	if o = h.run(t, o, nil); o.State != store.Succeeded || len(h.rt.running) != 0 || len(h.edges.deletions) != 1 {
 		t.Fatalf("%+v %v", o, h.rt.running)
 	}
-	if fmt.Sprint(h.rt.orphans) != "[hello/7]" {
-		t.Fatal("teardown left or overreached on stray pods:", h.rt.orphans)
+	if fmt.Sprint(h.rt.orphans) != "[hello/7]" || fmt.Sprint(h.rt.swept) != "[hello]" {
+		t.Fatal("teardown left or overreached on stray pods or secrets:", h.rt.orphans, h.rt.swept)
 	}
 	h.rt.strays = nil
 	if _, err = h.db.Service(context.Background(), "hello"); !errors.Is(err, store.ErrNotFound) {
