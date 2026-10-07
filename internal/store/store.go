@@ -21,11 +21,15 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-//go:embed schema.sql
-var schemaV1 string
+var (
+	//go:embed schema.sql
+	schemaV1 string
+	//go:embed v2_health.sql
+	healthV2 string
+)
 
 // migrations are forward-only; entry i upgrades user_version i to i+1.
-var migrations = []string{schemaV1}
+var migrations = []string{schemaV1, healthV2}
 
 var ErrNotFound = errors.New("not found")
 
@@ -64,6 +68,14 @@ const (
 	Failed   RevState = "failed"
 )
 
+// Health is how a service's live revision is doing.
+type Health string
+
+const (
+	Healthy  Health = "healthy"
+	Degraded Health = "degraded"
+)
+
 type OpKind string
 
 const (
@@ -89,6 +101,11 @@ type Service struct {
 	CreatedBy string `json:"created_by"`
 	Created   int64  `json:"created_at"`
 	Deleted   int64  `json:"deleted_at,omitempty"`
+	// Health is empty until the service has a live revision.
+	Health       Health `json:"health,omitempty"`
+	HealthReason string `json:"health_reason,omitempty"`
+	Restarts     int    `json:"restarts,omitempty"`
+	RestartedAt  int64  `json:"restarted_at,omitempty"`
 }
 
 type Revision struct {
@@ -215,11 +232,11 @@ func notFound(err error) error {
 
 // ---- services ----
 
-const serviceCols = "name,kind,node_dns,current_rev,COALESCE(expires_at,0),created_by,created_at,COALESCE(deleted_at,0)"
+const serviceCols = "name,kind,node_dns,current_rev,COALESCE(expires_at,0),created_by,created_at,COALESCE(deleted_at,0),health,health_reason,restarts,COALESCE(restarted_at,0)"
 
 func scanService(row scanner) (Service, error) {
 	var v Service
-	err := row.Scan(&v.Name, &v.Kind, &v.DNS, &v.Current, &v.Expires, &v.CreatedBy, &v.Created, &v.Deleted)
+	err := row.Scan(&v.Name, &v.Kind, &v.DNS, &v.Current, &v.Expires, &v.CreatedBy, &v.Created, &v.Deleted, &v.Health, &v.HealthReason, &v.Restarts, &v.RestartedAt)
 	return v, notFound(err)
 }
 
@@ -346,7 +363,7 @@ func (s *Store) Cutover(ctx context.Context, r Revision, drain time.Duration) er
 				return err
 			}
 		}
-		if _, err := tx.Exec("UPDATE services SET current_rev=?,expires_at=? WHERE name=?", r.Rev, expiry(r.Spec), r.Service); err != nil {
+		if _, err := tx.Exec("UPDATE services SET current_rev=?,expires_at=?,health='healthy',health_reason='',restarts=0,restarted_at=NULL WHERE name=?", r.Rev, expiry(r.Spec), r.Service); err != nil {
 			return err
 		}
 		if _, err := tx.Exec("UPDATE revisions SET state='live',reason='' WHERE service=? AND rev=?", r.Service, r.Rev); err != nil {
@@ -380,6 +397,47 @@ func (s *Store) ReleasePort(ctx context.Context, r Revision) error {
 		_, err := tx.Exec("UPDATE revisions SET host_port=NULL WHERE service=? AND rev=?", r.Service, r.Rev)
 		return err
 	})
+}
+
+// ---- health ----
+
+// setLive updates the service row only while r is its live revision, and
+// records the event only if it did.
+func (s *Store) setLive(ctx context.Context, r Revision, kind, message, set string, args ...any) error {
+	return s.write(ctx, func(tx *sql.Tx) error {
+		res, err := tx.Exec("UPDATE services SET "+set+" WHERE name=? AND current_rev=? AND deleted_at IS NULL", append(args, r.Service, r.Rev)...)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n != 1 || kind == "" {
+			return nil
+		}
+		return event(tx, r.Service, r.Rev, "reconciler", kind, message)
+	})
+}
+
+// Degrade records that the live revision r is failing, and why.
+func (s *Store) Degrade(ctx context.Context, r Revision, reason string) error {
+	return s.setLive(ctx, r, "degraded", fmt.Sprintf("r%d is unhealthy: %s", r.Rev, reason),
+		"health='degraded',health_reason=?", reason)
+}
+
+// Restarting records a restart of the live revision r before it happens, so
+// the backoff survives a daemon restart.
+func (s *Store) Restarting(ctx context.Context, r Revision, restarts int) error {
+	return s.setLive(ctx, r, "restarting", fmt.Sprintf("restarting r%d (restart %d in a row)", r.Rev, restarts),
+		"restarts=?,restarted_at=?", restarts, now())
+}
+
+// Recover records that the live revision r passes its health checks again.
+func (s *Store) Recover(ctx context.Context, r Revision) error {
+	return s.setLive(ctx, r, "recovered", fmt.Sprintf("r%d is healthy and serving again", r.Rev),
+		"health='healthy',health_reason=''")
+}
+
+// ClearRestarts ends a run of restarts once the live revision stays healthy.
+func (s *Store) ClearRestarts(ctx context.Context, r Revision) error {
+	return s.setLive(ctx, r, "", "", "restarts=0")
 }
 
 // ---- operations ----
