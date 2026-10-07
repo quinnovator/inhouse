@@ -134,6 +134,21 @@ func TestStoppedListenerComesBack(t *testing.T) {
 	}
 	get()
 
+	// A replacement that rejoins under another name is refused: callers know
+	// the service by its old name. A later restart that gets it back works.
+	second := node()
+	m.open = func(ctx context.Context, _ string, kind store.Kind) (*tailnet.Node, error) {
+		return open(ctx, "web-renamed", kind)
+	}
+	_ = second.Close()
+	waitStopped()
+	if _, err := m.Ensure(ctx, "web", store.Persistent, spec.ExposeTailnet); err == nil || m.Stopped("web") == nil || node() != second {
+		t.Fatal("accepted a renamed node", err)
+	}
+	m.open = open
+	restart()
+	get()
+
 	// Closing the manager is not a stopped listener.
 	_ = m.Close()
 	time.Sleep(100 * time.Millisecond)

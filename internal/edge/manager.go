@@ -161,12 +161,11 @@ func (m *Manager) restart(ctx context.Context, service string, kind store.Kind, 
 			return down(err)
 		}
 		if replacement.DNS != n.DNS {
-			// The upstream sends the old name as Host; make the next Switch
-			// build it again.
-			m.mu.Lock()
-			v.edge.Switch(nil)
-			v.port = 0
-			m.mu.Unlock()
+			// The service's address is its node's name, and callers know
+			// the old one. Tailscale suffixes a name while a stale device
+			// holds it, so a later restart can get it back.
+			_ = replacement.Close()
+			return down(fmt.Errorf("node rejoined as %s instead of %s; refusing implicit rename", replacement.DNS, n.DNS))
 		}
 		n = replacement
 		v.node.Store(n)

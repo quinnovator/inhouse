@@ -211,13 +211,15 @@ func (e *Engine) probe(ctx context.Context, name string) (rev int, err error) {
 // three cheap checks and a probe also runs every container's health check
 // once. A revision that stopped, or failed ProbeFailures probes in a row, is
 // marked degraded and restarted with backoff; an edge listener that stopped
-// is restarted with backoff too. After a daemon restart, a revision that is
-// still running gets traffic again once it passes health.
+// is restarted with backoff too, and the revision is still probed while it
+// is down. After a daemon restart, a revision that is still running gets
+// traffic again once it passes health.
 func (e *Engine) keepLive(ctx context.Context, svc store.Service, r store.Revision, probe bool) error {
 	running, err := e.runtime.Running(ctx, r)
 	if err != nil {
 		return err
 	}
+	var listening error
 	switch {
 	case !running:
 		return e.restart(ctx, svc, r, "not every container is running")
@@ -233,9 +235,10 @@ func (e *Engine) keepLive(ctx context.Context, svc store.Service, r store.Revisi
 		}
 		return e.serve(ctx, r)
 	case e.edges.Stopped(r.Service) != nil:
-		return e.relisten(ctx, r)
-	case !probe:
-		return nil
+		listening = e.relisten(ctx, r)
+	}
+	if !probe {
+		return listening
 	}
 	err = e.check(ctx, r)
 	if ctx.Err() != nil {
@@ -245,9 +248,11 @@ func (e *Engine) keepLive(ctx context.Context, svc store.Service, r store.Revisi
 		return e.restart(ctx, svc, r, fmt.Sprintf("%d health checks failed in a row, last: %v", n, err))
 	}
 	if err == nil && svc.Restarts > 0 && time.Since(time.Unix(svc.RestartedAt, 0)) >= e.cfg.RestartReset {
-		return e.store.ClearRestarts(ctx, r)
+		if err = e.store.ClearRestarts(ctx, r); err != nil {
+			return err
+		}
 	}
-	return nil
+	return listening
 }
 
 // failed counts r's failed probes in a row, starting over after a pass.

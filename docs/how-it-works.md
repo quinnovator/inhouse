@@ -171,8 +171,10 @@ unavailable even though the pods keep running.
 
 If a service's HTTPS listener stops, the next pass or probe, within 10
 seconds, starts it again without a daemon restart. If the service's node
-stopped too, a new node takes over from its saved state. The live revision
-keeps running and keeps its health; only the edge restarts. A listener that
+stopped too, a new node takes over from its saved state; one that rejoins
+under a different name is refused and retried, since callers know the
+service by its name. The live revision keeps running and is still probed
+while its listener is down; only the edge restarts. A listener that
 keeps stopping waits as a restarted revision does: 10 seconds, then twice as
 long each time up to 5 minutes, counting from the first again once it stays
 up for 10 minutes. Each restart is a `listener_stopped` event, then
