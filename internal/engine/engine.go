@@ -63,6 +63,9 @@ type Edges interface {
 	Port(service string) int
 	// Clear makes the edge answer 503 until the next Switch.
 	Clear(service string)
+	// Stopped reports why the service's HTTPS listener stopped serving, or
+	// nil. Ensure starts it again.
+	Stopped(service string) error
 	// Delete removes the node from the tailnet and forgets its state.
 	Delete(ctx context.Context, service string, kind store.Kind) error
 }
@@ -128,10 +131,17 @@ type Engine struct {
 	missed    map[string]bool // a reconcile found the service busy
 	lastError map[string]string
 	failures  map[string]failures
+	relistens map[string]relistens
 }
 
 // failures counts a live revision's failed probes in a row.
 type failures struct{ rev, n int }
+
+// relistens counts a service's HTTPS listener restarts in a row.
+type relistens struct {
+	n  int
+	at time.Time
+}
 
 func New(cfg Config, s *store.Store, v *vault.Vault, r Runtime, vol Volumes, e Edges) *Engine {
 	return &Engine{
@@ -141,6 +151,7 @@ func New(cfg Config, s *store.Store, v *vault.Vault, r Runtime, vol Volumes, e E
 		missed:    map[string]bool{},
 		lastError: map[string]string{},
 		failures:  map[string]failures{},
+		relistens: map[string]relistens{},
 	}
 }
 
