@@ -127,6 +127,7 @@ for your own app ([stack spec](docs/stack-spec.md),
 | [Access, agents and MCP](docs/access.md) | Grants, roles, connecting agents, the MCP tools and HTTP API |
 | [Operating a host](docs/operating.md) | Provisioning, installing, upgrading, backups, restore, troubleshooting |
 | [Security](SECURITY.md) | Threat model and reporting |
+| [Roadmap](ROADMAP.md) | What comes next |
 
 ## Limits
 
@@ -141,6 +142,8 @@ for your own app ([stack spec](docs/stack-spec.md),
   service holds its slot for the host's lifetime, even after deletion; an
   ephemeral one frees its slot when it is deleted.
 
+Some of these are on the [roadmap](ROADMAP.md).
+
 ## Development
 
 ```sh
@@ -153,6 +156,8 @@ go build ./cmd/inhoused ./cmd/inhouse
 ## Contributing
 
 Contributions aren't accepted yet; they will be once inhouse reaches beta.
+Questions, bug reports and ideas are welcome in
+[Discussions](https://github.com/quinnovator/inhouse/discussions).
 See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
