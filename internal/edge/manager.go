@@ -5,12 +5,14 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/quinnovator/inhouse/internal/spec"
@@ -21,25 +23,45 @@ import (
 
 // Manager runs one tailnet node and HTTPS listener per service.
 type Manager struct {
-	StateDir   string // one subdirectory per node
-	Enroll     tailnet.Credential
-	Lifecycle  tailnet.Credential
-	ControlURL string // tests only
+	StateDir  string // one subdirectory per node
+	Enroll    tailnet.Credential
+	Lifecycle tailnet.Credential
+
+	// open starts a service's node and listen opens its HTTPS listener;
+	// tests replace them.
+	open   func(ctx context.Context, service string, kind store.Kind) (*tailnet.Node, error)
+	listen func(n *tailnet.Node, expose string) (net.Listener, error)
 
 	mu    sync.Mutex
 	nodes map[string]*managed
 }
 
 type managed struct {
-	node   *tailnet.Node
+	node   atomic.Pointer[tailnet.Node] // replaced if it stops
 	edge   *Edge
 	server *http.Server
-	port   int
 	expose string
+
+	// Guarded by Manager.mu.
+	port    int
+	stopped error // why the listener stopped serving; nil while it serves
 }
 
 func NewManager(stateDir string, enroll, lifecycle tailnet.Credential) *Manager {
-	return &Manager{StateDir: stateDir, Enroll: enroll, Lifecycle: lifecycle, nodes: map[string]*managed{}}
+	m := &Manager{StateDir: stateDir, Enroll: enroll, Lifecycle: lifecycle, nodes: map[string]*managed{}}
+	m.open = func(ctx context.Context, service string, kind store.Kind) (*tailnet.Node, error) {
+		return tailnet.Open(ctx, tailnet.NodeConfig{
+			Dir: filepath.Join(m.StateDir, service), Hostname: service, Tag: tagFor(kind),
+			Ephemeral: kind == store.Ephemeral, Enroll: m.Enroll, Certificate: true,
+		})
+	}
+	m.listen = func(n *tailnet.Node, expose string) (net.Listener, error) {
+		if expose == spec.ExposeFunnel {
+			return n.Server.ListenFunnel("tcp", ":443")
+		}
+		return n.Server.ListenTLS("tcp", ":443")
+	}
+	return m
 }
 
 func tagFor(kind store.Kind) string {
@@ -49,7 +71,9 @@ func tagFor(kind store.Kind) string {
 	return tailnet.TagService
 }
 
-// Ensure starts the service's node and listener if they aren't running.
+// Ensure starts the service's node and listener if they aren't running. A
+// listener that stopped is started again, on a new node if its node stopped
+// too.
 func (m *Manager) Ensure(ctx context.Context, service string, kind store.Kind, expose string) (string, error) {
 	if expose != spec.ExposeTailnet && expose != spec.ExposeFunnel {
 		return "", errors.New("invalid exposure mode")
@@ -59,22 +83,28 @@ func (m *Manager) Ensure(ctx context.Context, service string, kind store.Kind, e
 	}
 	m.mu.Lock()
 	existing := m.nodes[service]
+	var stopped error
+	if existing != nil {
+		stopped = existing.stopped
+	}
 	m.mu.Unlock()
 	if existing != nil {
 		if existing.expose != expose {
 			return "", errors.New("a node's exposure mode cannot change; delete the service first")
 		}
-		return existing.node.DNS, nil
+		if stopped != nil {
+			return m.restart(ctx, service, kind, existing)
+		}
+		return existing.node.Load().DNS, nil
 	}
-	n, err := tailnet.Open(ctx, tailnet.NodeConfig{
-		Dir: filepath.Join(m.StateDir, service), Hostname: service, Tag: tagFor(kind),
-		Ephemeral: kind == store.Ephemeral, Enroll: m.Enroll, Certificate: true, ControlURL: m.ControlURL,
-	})
+	n, err := m.open(ctx, service, kind)
 	if err != nil {
 		return "", err
 	}
-	e := New(func(ctx context.Context, remote string) (Identity, error) {
-		who, err := n.Client.WhoIs(ctx, remote)
+	v := &managed{expose: expose}
+	v.node.Store(n)
+	v.edge = New(func(ctx context.Context, remote string) (Identity, error) {
+		who, err := v.node.Load().Client.WhoIs(ctx, remote)
 		if err != nil {
 			return Identity{}, err
 		}
@@ -83,22 +113,91 @@ func (m *Manager) Ensure(ctx context.Context, service string, kind store.Kind, e
 		}
 		return Identity{Login: who.UserProfile.LoginName, Name: who.UserProfile.DisplayName}, nil
 	})
-	var listener net.Listener
-	if expose == spec.ExposeFunnel {
-		listener, err = n.Server.ListenFunnel("tcp", ":443")
-	} else {
-		listener, err = n.Server.ListenTLS("tcp", ":443")
-	}
+	listener, err := m.listen(n, expose)
 	if err != nil {
 		_ = n.Close()
 		return "", fmt.Errorf("listen on %s: %w", n.DNS, err)
 	}
-	server := &http.Server{Handler: e, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, ConnContext: connContext}
+	v.server = &http.Server{Handler: v.edge, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, ConnContext: connContext}
 	m.mu.Lock()
-	m.nodes[service] = &managed{node: n, edge: e, server: server, expose: expose}
+	m.nodes[service] = v
 	m.mu.Unlock()
-	go func() { _ = server.Serve(listener) }()
+	go m.serve(service, v, listener)
 	return n.DNS, nil
+}
+
+// serve runs until the listener stops. Unless the service was deleted or the
+// manager closed, it records why, so Stopped reports it and the next Ensure
+// starts the listener again.
+func (m *Manager) serve(service string, v *managed, listener net.Listener) {
+	err := v.server.Serve(listener)
+	if errors.Is(err, http.ErrServerClosed) {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.nodes[service] == v {
+		log.Printf("edge %s: HTTPS listener stopped: %v", service, err)
+		v.stopped = err
+	}
+}
+
+// restart starts a stopped listener again. A stopped tsnet node still lets
+// a listener open but never accepts on it, so a node that no longer runs is
+// first replaced from its state directory. The proxy keeps its upstream, so
+// the live revision is served again as soon as the listener is back.
+func (m *Manager) restart(ctx context.Context, service string, kind store.Kind, v *managed) (string, error) {
+	down := func(err error) (string, error) {
+		m.mu.Lock()
+		v.stopped = err
+		m.mu.Unlock()
+		return "", err
+	}
+	n := v.node.Load()
+	if !running(ctx, n) {
+		_ = n.Close()
+		replacement, err := m.open(ctx, service, kind)
+		if err != nil {
+			return down(err)
+		}
+		if replacement.DNS != n.DNS {
+			// The service's address is its node's name, and callers know
+			// the old one. Tailscale suffixes a name while a stale device
+			// holds it, so a later restart can get it back.
+			_ = replacement.Close()
+			return down(fmt.Errorf("node rejoined as %s instead of %s; refusing implicit rename", replacement.DNS, n.DNS))
+		}
+		n = replacement
+		v.node.Store(n)
+	}
+	listener, err := m.listen(n, v.expose)
+	if err != nil {
+		return down(fmt.Errorf("listen on %s: %w", n.DNS, err))
+	}
+	m.mu.Lock()
+	v.stopped = nil
+	m.mu.Unlock()
+	go m.serve(service, v, listener)
+	return n.DNS, nil
+}
+
+// running reports whether the node still answers and is connected.
+func running(ctx context.Context, n *tailnet.Node) bool {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	st, err := n.Client.StatusWithoutPeers(ctx)
+	return err == nil && st.BackendState == ipn.Running.String()
+}
+
+// Stopped reports why the service's HTTPS listener stopped serving, or nil
+// while it serves or if it was never started.
+func (m *Manager) Stopped(service string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if v := m.nodes[service]; v != nil {
+		return v.stopped
+	}
+	return nil
 }
 
 // connContext marks Funnel connections by their transport, never by a header.
@@ -121,7 +220,7 @@ func (m *Manager) Switch(service string, port int) error {
 	if v.port == port {
 		return nil
 	}
-	target, err := NewTarget(fmt.Sprintf("http://127.0.0.1:%d", port), v.node.DNS)
+	target, err := NewTarget(fmt.Sprintf("http://127.0.0.1:%d", port), v.node.Load().DNS)
 	if err != nil {
 		return err
 	}
@@ -160,9 +259,10 @@ func (m *Manager) Delete(ctx context.Context, service string, kind store.Kind) e
 		delete(m.nodes, service)
 		m.mu.Unlock()
 		if v != nil {
+			n := v.node.Load()
 			_ = v.server.Close()
-			_ = v.node.Client.Logout(ctx)
-			_ = v.node.Close()
+			_ = n.Client.Logout(ctx)
+			_ = n.Close()
 		}
 	}
 	id, err := tailnet.ReadIdentity(dir)
@@ -199,7 +299,7 @@ func (m *Manager) Close() error {
 	defer m.mu.Unlock()
 	var out error
 	for _, v := range m.nodes {
-		out = errors.Join(out, v.server.Close(), v.node.Close())
+		out = errors.Join(out, v.server.Close(), v.node.Load().Close())
 	}
 	return out
 }

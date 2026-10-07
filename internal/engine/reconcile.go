@@ -207,16 +207,19 @@ func (e *Engine) probe(ctx context.Context, name string) (rev int, err error) {
 }
 
 // keepLive ensures the live revision runs, passes its health checks, and has
-// the edge pointed at it. In the steady state a pass makes two cheap checks
-// and a probe also runs every container's health check once. A revision
-// that stopped, or failed ProbeFailures probes in a row, is marked degraded
-// and restarted with backoff. After a daemon restart, a revision that is
-// still running gets traffic again once it passes health.
+// the edge pointed at it and listening. In the steady state a pass makes
+// three cheap checks and a probe also runs every container's health check
+// once. A revision that stopped, or failed ProbeFailures probes in a row, is
+// marked degraded and restarted with backoff; an edge listener that stopped
+// is restarted with backoff too, and the revision is still probed while it
+// is down. After a daemon restart, a revision that is still running gets
+// traffic again once it passes health.
 func (e *Engine) keepLive(ctx context.Context, svc store.Service, r store.Revision, probe bool) error {
 	running, err := e.runtime.Running(ctx, r)
 	if err != nil {
 		return err
 	}
+	var listening error
 	switch {
 	case !running:
 		return e.restart(ctx, svc, r, "not every container is running")
@@ -231,8 +234,11 @@ func (e *Engine) keepLive(ctx context.Context, svc store.Service, r store.Revisi
 			return e.restart(ctx, svc, r, err.Error())
 		}
 		return e.serve(ctx, r)
-	case !probe:
-		return nil
+	case e.edges.Stopped(r.Service) != nil:
+		listening = e.relisten(ctx, r)
+	}
+	if !probe {
+		return listening
 	}
 	err = e.check(ctx, r)
 	if ctx.Err() != nil {
@@ -242,9 +248,11 @@ func (e *Engine) keepLive(ctx context.Context, svc store.Service, r store.Revisi
 		return e.restart(ctx, svc, r, fmt.Sprintf("%d health checks failed in a row, last: %v", n, err))
 	}
 	if err == nil && svc.Restarts > 0 && time.Since(time.Unix(svc.RestartedAt, 0)) >= e.cfg.RestartReset {
-		return e.store.ClearRestarts(ctx, r)
+		if err = e.store.ClearRestarts(ctx, r); err != nil {
+			return err
+		}
 	}
-	return nil
+	return listening
 }
 
 // failed counts r's failed probes in a row, starting over after a pass.
@@ -291,6 +299,39 @@ func (e *Engine) restart(ctx context.Context, svc store.Service, r store.Revisio
 		return e.store.Degrade(ctx, r, "restart failed: "+err.Error())
 	}
 	return e.store.Recover(ctx, r)
+}
+
+// relisten starts the service's stopped HTTPS listener again, on a new node
+// if its node stopped too. The revision is unaffected and keeps its health.
+// A listener that keeps stopping waits as a restarted revision does, and
+// once one stays up for RestartReset its next restart counts as the first.
+func (e *Engine) relisten(ctx context.Context, r store.Revision) error {
+	stopped := e.edges.Stopped(r.Service)
+	e.mu.Lock()
+	l := e.relistens[r.Service]
+	if time.Since(l.at) >= e.cfg.RestartReset {
+		l.n = 0
+	}
+	wait := l.n > 0 && time.Since(l.at) < e.backoff(l.n)
+	if !wait {
+		l = relistens{n: l.n + 1, at: time.Now()}
+		e.relistens[r.Service] = l
+	}
+	e.mu.Unlock()
+	if wait {
+		return fmt.Errorf("HTTPS listener is down: %w", stopped)
+	}
+	msg := fmt.Sprintf("HTTPS listener stopped (%v); restarting it (restart %d in a row)", stopped, l.n)
+	if err := e.store.Event(ctx, r.Service, r.Rev, "reconciler", "listener_stopped", msg); err != nil {
+		return err
+	}
+	if err := e.serve(ctx, r); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("HTTPS listener is down: %w", err)
+	}
+	return e.store.Event(ctx, r.Service, r.Rev, "reconciler", "listener_restarted", "HTTPS listener is serving again")
 }
 
 // backoff is the least time between restart n and the next one.
@@ -645,6 +686,7 @@ func (e *Engine) teardown(ctx context.Context, svc store.Service) error {
 	e.edges.Clear(svc.Name)
 	e.mu.Lock()
 	delete(e.failures, svc.Name)
+	delete(e.relistens, svc.Name)
 	e.mu.Unlock()
 	revs, err := e.store.Revisions(ctx, svc.Name)
 	if err != nil {
