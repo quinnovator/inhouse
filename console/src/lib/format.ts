@@ -83,6 +83,8 @@ export function health(s: Service, now = Date.now() / 1000): Health {
   if (s.deleted_at) return { tone: 'none', label: 'Deleting', detail: 'removing pods, volumes and node' }
   if (!s.current_rev) return { tone: 'none', label: 'Not live', detail: 'no revision is serving' }
   if (s.stopped_at) return { tone: 'none', label: 'Stopped', detail: `since ${ago(s.stopped_at, now)}` }
+  // Health is empty from a start until the live revision passes its checks.
+  if (!s.health) return { tone: 'busy', label: 'Starting', detail: 'waiting for health checks' }
   if (s.health === 'degraded') {
     return {
       tone: 'warn',

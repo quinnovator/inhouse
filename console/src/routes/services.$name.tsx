@@ -215,7 +215,7 @@ function Loaded({ detail, open }: { detail: ServiceDetail; open: (d: Dialog) => 
           <section className="card" aria-labelledby="rev-h">
             <div className="card-head">
               <h2 id="rev-h">Revisions</h2>
-              <span className="sub">The 10 newest. A rollback is a new revision that runs exactly what an old one ran.</span>
+              <span className="sub">The 10 newest, and the live one. A rollback is a new revision that runs exactly what an old one ran.</span>
             </div>
             <div className="card-body flush">
               {revs.length ? (

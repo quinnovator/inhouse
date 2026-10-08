@@ -367,7 +367,8 @@ func (e *Engine) List(ctx context.Context) ([]ServiceView, error) {
 	return out, nil
 }
 
-// Get returns a service with its ten newest revisions and five newest events.
+// Get returns a service with its ten newest revisions, plus its live
+// revision if that is older, and its five newest events.
 func (e *Engine) Get(ctx context.Context, name string) (ServiceDetail, error) {
 	if err := authz.From(ctx).RequireRead(name); err != nil {
 		return ServiceDetail{}, err
@@ -381,7 +382,13 @@ func (e *Engine) Get(ctx context.Context, name string) (ServiceDetail, error) {
 		return ServiceDetail{}, err
 	}
 	if len(revs) > 10 {
+		older := revs[10:]
 		revs = revs[:10]
+		for _, r := range older {
+			if r.Rev == svc.Current {
+				revs = append(revs, r)
+			}
+		}
 	}
 	events, err := e.store.Events(ctx, store.EventQuery{Service: name, Limit: 5})
 	return ServiceDetail{view(svc), revs, events}, err
