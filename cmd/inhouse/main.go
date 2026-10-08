@@ -37,6 +37,11 @@ Services
   deploy [-key K] [-no-wait] SPEC        deploy a stack spec (YAML or JSON)
   rollback [-key K] [-restore-volumes] SERVICE REV
                                          redeploy an earlier revision
+  restart [-key K] [-no-wait] SERVICE    run a fresh copy of the live revision
+  redeploy [-key K] [-no-wait] SERVICE   redeploy with current secret values
+  stop [-key K] [-no-wait] SERVICE       stop a service without deleting it
+  start [-key K] [-no-wait] SERVICE      start a stopped service
+  extend SERVICE                         restart an ephemeral service's TTL
   delete [-key K] SERVICE                delete a service and its node
   wait OPERATION                         wait for an operation to finish
   logs [-rev N] [-container C] [-tail N] SERVICE
@@ -121,6 +126,21 @@ func run(ctx context.Context, args []string) error {
 		return c.deploy(ctx, args)
 	case "rollback":
 		return c.rollback(ctx, args)
+	case "restart", "redeploy", "stop", "start":
+		fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
+		key := fs.String("key", uuid.NewString(), "idempotency key; reuse it to retry safely")
+		noWait := fs.Bool("no-wait", false, "return once the "+cmd+" is recorded")
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+		name, err := oneService(fs.Args())
+		if err != nil {
+			return err
+		}
+		return c.operate(ctx, "POST", "/v1/services/"+name+"/"+cmd, *key, nil, !*noWait)
+	case "extend":
+		name, err := oneService(args)
+		return c.show(ctx, "POST", "/v1/services/"+name+"/extend", err)
 	case "delete":
 		fs := flag.NewFlagSet("delete", flag.ContinueOnError)
 		key := fs.String("key", uuid.NewString(), "idempotency key")

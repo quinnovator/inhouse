@@ -30,6 +30,10 @@ type (
 	named struct {
 		Name string `json:"name"`
 	}
+	namedOp struct {
+		Name string `json:"name"`
+		Key  string `json:"idempotency_key,omitempty"`
+	}
 	deployQ struct {
 		Spec json.RawMessage `json:"spec"`
 		Key  string          `json:"idempotency_key,omitempty"`
@@ -133,6 +137,16 @@ func NewMCPServer(e *engine.Engine, p authz.Principal) *mcp.Server {
 		})
 	add(server, e, p, "delete_service", "DELETE a service: stops all its revisions, removes its tailnet node, and removes its volumes (persistent volumes are kept in trash for seven days). Deployers may delete only ephemeral services they created.", destructive,
 		func(ctx context.Context, in named) (any, error) { return e.Delete(as(ctx), in.Name, "") })
+	add(server, e, p, "restart_service", "Restart a service: deploy an exact copy of its live revision (same images and secret versions) as a new revision. It follows the service's update strategy: a rolling service keeps serving until the copy passes its health checks; a recreate service is briefly unavailable. Returns an operation; call wait_for_operation.", mutating,
+		func(ctx context.Context, in namedOp) (any, error) { return e.Restart(as(ctx), in.Name, in.Key) })
+	add(server, e, p, "redeploy_service", "Redeploy a service's live spec with every secret pinned to its current value, so a rotated secret reaches it. Images stay at the same digests. A no-op if no secret changed. Returns an operation; call wait_for_operation.", mutating,
+		func(ctx context.Context, in namedOp) (any, error) { return e.Redeploy(as(ctx), in.Name, in.Key) })
+	add(server, e, p, "stop_service", "STOP a service without deleting it: its live revision stops and its URL answers 503 until start_service. Revisions, volumes and the tailnet node are kept; an ephemeral service still expires on time. Deploys are refused while it is stopped.", destructive,
+		func(ctx context.Context, in namedOp) (any, error) { return e.Stop(as(ctx), in.Name, in.Key) })
+	add(server, e, p, "start_service", "Start a stopped service's live revision again; it gets traffic once it passes its health checks. Returns an operation; call wait_for_operation.", mutating,
+		func(ctx context.Context, in namedOp) (any, error) { return e.Start(as(ctx), in.Name, in.Key) })
+	add(server, e, p, "extend_service", "Restart an ephemeral service's TTL from now, as deploying it unchanged would. Returns the service with its new expires_at.", mutating,
+		func(ctx context.Context, in named) (any, error) { return e.Extend(as(ctx), in.Name) })
 	add(server, e, p, "list_secrets", "List secret names and when they changed. Values are never returned. Admin only.", readOnly,
 		func(ctx context.Context, _ empty) (any, error) { return e.ListSecrets(as(ctx)) })
 	add(server, e, p, "set_secret", "Encrypt and store a secret value, replacing any previous value; running revisions keep the value they were deployed with. The value is never returned. Admin only.", destructive,

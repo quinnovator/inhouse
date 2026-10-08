@@ -48,8 +48,8 @@ need in [Discussions](https://github.com/quinnovator/inhouse/discussions).
   files, tunable health checks with longer startup windows, and changing
   `expose` without deleting the service.
 - **CLI:** readable output by default (`--json` for scripts), `logs -f`,
-  `status`, `exec`, `restart`, confirmation before `delete`, a config file
-  and shell completion.
+  `status`, `exec`, confirmation before `delete`, a config file and shell
+  completion.
 - **Observability:** Prometheus metrics, a daemon health endpoint,
   per-service CPU and memory use, and notifications when a deploy fails or a
   service degrades.
