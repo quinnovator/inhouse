@@ -82,6 +82,7 @@ export type Health = { tone: Tone; label: string; detail: string; reason?: strin
 export function health(s: Service, now = Date.now() / 1000): Health {
   if (s.deleted_at) return { tone: 'none', label: 'Deleting', detail: 'removing pods, volumes and node' }
   if (!s.current_rev) return { tone: 'none', label: 'Not live', detail: 'no revision is serving' }
+  if (s.stopped_at) return { tone: 'none', label: 'Stopped', detail: `since ${ago(s.stopped_at, now)}` }
   if (s.health === 'degraded') {
     return {
       tone: 'warn',
@@ -98,10 +99,10 @@ export function health(s: Service, now = Date.now() / 1000): Health {
 }
 
 const tones: Record<Exclude<Tone, 'none'>, string[]> = {
-  ok: ['succeeded', 'cutover', 'recovered', 'node_ready', 'noop'],
+  ok: ['succeeded', 'cutover', 'recovered', 'node_ready', 'noop', 'extended'],
   warn: ['degraded', 'restarting', 'stop_error', 'reconcile_error', 'live_unavailable'],
   bad: ['failed', 'denied', 'failure_logs'],
-  busy: ['deploy', 'rollback', 'delete', 'normalized'],
+  busy: ['deploy', 'rollback', 'delete', 'normalized', 'restart', 'stop', 'start'],
 }
 
 export function eventTone(kind: string): Tone {

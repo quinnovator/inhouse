@@ -84,6 +84,9 @@ function query(params: Record<string, string | number | undefined>) {
   return s ? `?${s}` : ''
 }
 
+// ServiceAction is an operation on a service's live revision.
+export type ServiceAction = 'restart' | 'redeploy' | 'stop' | 'start'
+
 export type EventQuery = { service?: string; since?: number; limit?: number }
 export type LogQuery = { rev?: number; container?: string; tail?: number; cursor?: string }
 
@@ -102,6 +105,8 @@ export const api = {
   rollback: (name: string, to: number, restore: boolean, key: string) =>
     call<Operation>('POST', `/v1/services/${seg(name)}/rollback`, { json: { to_rev: to, restore_volumes: restore }, key }),
   remove: (name: string, key: string) => call<Operation>('DELETE', `/v1/services/${seg(name)}`, { key }),
+  act: (name: string, action: ServiceAction, key: string) => call<Operation>('POST', `/v1/services/${seg(name)}/${action}`, { key }),
+  extend: (name: string) => call<Service>('POST', `/v1/services/${seg(name)}/extend`),
   secrets: (signal?: AbortSignal) => call<SecretInfo[]>('GET', '/v1/secrets', { signal }),
   setSecret: (name: string, value: string) => call<unknown>('PUT', secretPath(name), { json: { value } }),
   deleteSecret: (name: string) => call<unknown>('DELETE', secretPath(name)),

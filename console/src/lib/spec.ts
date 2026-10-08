@@ -7,6 +7,10 @@ export function order(spec: Stack) {
   return spec.order?.length ? spec.order : Object.keys(spec.containers ?? {})
 }
 
+export function hasSecrets(spec: Stack | undefined) {
+  return !!spec && Object.values(spec.containers).some((c) => c.secrets && Object.keys(c.secrets).length > 0)
+}
+
 export function hasVolumes(spec: Stack | undefined) {
   return !!spec && Object.values(spec.containers).some((c) => c.volumes && Object.keys(c.volumes).length > 0)
 }

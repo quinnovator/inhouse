@@ -32,6 +32,7 @@ export type Service = {
   health_reason?: string
   restarts?: number
   restarted_at?: number
+  stopped_at?: number
   url?: string
 }
 
@@ -82,7 +83,7 @@ export type ServiceDetail = {
 
 export type Operation = {
   operation_id: string
-  kind: 'deploy' | 'rollback' | 'delete'
+  kind: 'deploy' | 'rollback' | 'delete' | 'restart' | 'stop' | 'start'
   service: string
   rev?: number
   restore_from?: number

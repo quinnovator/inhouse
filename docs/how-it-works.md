@@ -54,10 +54,12 @@ pass handles every service in parallel, one pass per service at a time:
 1. **Deleted** (tombstoned): stop and remove every pod, delete volumes, delete
    the tailnet device, then forget the service.
 2. **Expired** (ephemeral, TTL passed): tombstone it, then as above.
-3. **Live revision down** (reboot, crash, fresh restore): restart it as
+3. **Stopped**: keep the live revision stopped and the edge answering 503
+   (see [Restart, stop and start](#restart-stop-and-start)).
+4. **Live revision down** (reboot, crash, fresh restore): restart it as
    described in [Keeping live services healthy](#keeping-live-services-healthy).
-4. **Operation running**: move it forward one step at a time (below).
-5. **Leftovers**: stop replaced revisions after their drain window, remove
+5. **Operation running**: move it forward one step at a time (below).
+6. **Leftovers**: stop replaced revisions after their drain window, remove
    failed revisions' containers after 24 hours, and remove labelled pods that
    have no revision after a 10-minute grace.
 
@@ -144,6 +146,38 @@ A restart only ever reruns the same revision. It never rolls back, and an
 operation in progress is unaffected: a deploy still cuts over only to a
 healthy candidate. While a recreate update has stopped the live revision on
 purpose, it is not probed or restarted.
+
+## Restart, stop and start
+
+These run as operations, one per service at a time like a deploy, and are
+allowed to anyone who may deploy the live revision.
+
+- **Restart** (`inhouse restart`, `restart_service`) deploys an exact copy
+  of the live revision as a new revision, as a rollback to it would: the
+  same image digests and the same secret versions. It follows the service's
+  update strategy, so a rolling service keeps serving until the copy is
+  healthy; a recreate service is down while the copy starts. Its volumes are
+  snapshotted, as on every deploy.
+- **Redeploy** (`inhouse redeploy`, `redeploy_service`) deploys the live
+  revision's spec again with every secret pinned to its current value. It
+  is how a rotated secret reaches a running service. Images keep their
+  digests; to pull a newer image, deploy the spec with its tag. If no
+  secret changed, it is a no-op.
+- **Stop** (`inhouse stop`, `stop_service`) stops the live revision and
+  leaves everything else: revisions, volumes, and the tailnet node, which
+  answers 503. A stopped service is not probed or restarted, and deploys,
+  rollbacks, restarts and redeploys are refused until it is started. An
+  ephemeral service still expires on time, and a stopped service can be
+  deleted.
+- **Start** (`inhouse start`, `start_service`) starts the live revision
+  again from its pinned images and gives it traffic once it is healthy, as
+  after a reboot. If it doesn't come up healthy, the start fails and the
+  service is `degraded`, so it is restarted with backoff like any live
+  revision that went down. Stop it again, or start and then deploy a fix.
+
+**Extend** (`inhouse extend`, `extend_service`) restarts an ephemeral
+service's TTL from now, as deploying it unchanged would. It takes effect at
+once and is recorded as an `extended` event.
 
 ## The edge
 

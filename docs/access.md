@@ -39,7 +39,7 @@ together. A grant with an unknown field or invalid value is ignored entirely.
 | Action | viewer | deployer | admin |
 | --- | --- | --- | --- |
 | List, get, plan, logs, events, wait | matching services | matching services | all |
-| Deploy, roll back | | matching, within `expose` and `max_ttl` | all |
+| Deploy, roll back, restart, redeploy, stop, start, extend | | matching, within `expose` and `max_ttl` | all |
 | Delete | | ephemeral services it created | all |
 | Roll back with volume restore | | | yes |
 | Set, list, delete secrets | | | yes |
@@ -89,6 +89,10 @@ permission checks:
 | `rollback` | Redeploy an earlier revision (optionally restoring volumes, admin) |
 | `get_logs` | A page of a container's output, secrets redacted, with a cursor for more |
 | `get_events` | The attributed timeline, including failed containers' last log lines |
+| `restart_service` | Run a fresh copy of the live revision as a new revision |
+| `redeploy_service` | Redeploy the live revision with current secret values |
+| `stop_service`, `start_service` | Take a service offline without deleting it, and bring it back |
+| `extend_service` | Restart an ephemeral service's TTL from now |
 | `delete_service` | Delete a service and its node |
 | `list_secrets`, `set_secret`, `delete_secret` | Write-only secrets (admin) |
 
@@ -151,6 +155,8 @@ refuse browser requests from other origins.
 | `GET /v1/services`, `GET /v1/services/{name}` | List; detail with revisions and events |
 | `POST /v1/plan`, `POST /v1/deploy` | Body: the spec (YAML or JSON) |
 | `POST /v1/services/{name}/rollback` | `{"to_rev": 7, "restore_volumes": false}` |
+| `POST /v1/services/{name}/restart`, `.../redeploy`, `.../stop`, `.../start` | No body; returns an operation |
+| `POST /v1/services/{name}/extend` | No body; returns the service |
 | `DELETE /v1/services/{name}` | Delete |
 | `GET /v1/operations/{id}?wait=60` | Operation state, waiting up to 120 s |
 | `GET /v1/services/{name}/logs?rev=&container=&tail=&cursor=` | A page of logs |

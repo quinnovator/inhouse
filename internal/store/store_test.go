@@ -224,3 +224,73 @@ func TestEphemeralSlotsAreReused(t *testing.T) {
 		t.Fatal("allocated past the pool")
 	}
 }
+
+func TestLifecycleMigrationKeepsOperations(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "state.db")
+	db, err := sql.Open("sqlite", file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(schemaV1 + ";" + healthV2 + "; PRAGMA user_version=2;" +
+		"INSERT INTO services(name,kind,current_rev,created_by,created_at) VALUES('live','persistent',1,'me',0);" +
+		"INSERT INTO operations(id,kind,service,rev,state,idempotency_key,request_hash,created_by,created_at) VALUES('op1','deploy','live',1,'running','k1','h','me',0)"); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+	s, err := Open(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	ctx := context.Background()
+	if o, err := s.OperationByKey(ctx, "k1"); err != nil || o.ID != "op1" || o.State != Running {
+		t.Fatal("migration lost an operation", o, err)
+	}
+	// The running deploy still holds the service, and the new kinds fit.
+	var conflict *Conflict
+	if _, err = s.StopService(ctx, "live", "me", "", "stop"); !errors.As(err, &conflict) || conflict.OperationID != "op1" {
+		t.Fatal(err)
+	}
+	if _, err = s.db.Exec("UPDATE operations SET state='succeeded'"); err != nil {
+		t.Fatal(err)
+	}
+	if o, err := s.StopService(ctx, "live", "me", "", "stop"); err != nil || o.Kind != Stop || o.Rev != 1 {
+		t.Fatal(o, err)
+	}
+	if svc, _ := s.Service(ctx, "live"); svc.Stopped == 0 {
+		t.Fatal("not marked stopped")
+	}
+	// A probe that finishes after the stop can't mark it healthy or degraded.
+	if err = s.Recover(ctx, Revision{Service: "live", Rev: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if svc, _ := s.Service(ctx, "live"); svc.Health != "" {
+		t.Fatal("a stopped service's health changed", svc.Health)
+	}
+}
+
+func TestExtendRefusesAnExpiredService(t *testing.T) {
+	s := open(t)
+	ctx := context.Background()
+	st := stack(t, "preview")
+	ttl := "1h"
+	st.TTL = &ttl
+	o, err := s.Record(ctx, Request{Stack: st, Kind: Deploy, RequestHash: "h", Actor: "me", PortLow: 20000, PortHigh: 20010})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, _ := s.Revision(ctx, "preview", o.Rev)
+	if err = s.Cutover(ctx, r, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Extend(ctx, r, "me"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.db.Exec("UPDATE services SET expires_at=1"); err != nil {
+		t.Fatal(err)
+	}
+	var conflict *Conflict
+	if err = s.Extend(ctx, r, "me"); !errors.As(err, &conflict) {
+		t.Fatal("extended an expired service", err)
+	}
+}
