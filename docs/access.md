@@ -16,7 +16,8 @@ The control node asks Tailscale who sent each request:
   regardless of who created it. Tagged callers never inherit a person's grants.
 
 Every mutation is recorded as an event attributed to that principal, so
-`inhouse events` is also the audit log.
+`inhouse events` is also the audit log. Events are kept for the daemon's
+`-history-retention`, 90 days by default; set it to `0` to keep them forever.
 
 ## Grants
 
