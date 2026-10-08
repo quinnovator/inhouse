@@ -4,10 +4,6 @@ inhouse is alpha software. This page says what comes next, in order, without
 dates. It changes as we learn from people running it, so tell us what you
 need in [Discussions](https://github.com/quinnovator/inhouse/discussions).
 
-## Now: make the alpha trustworthy
-
-- **Bounded history.** Old events and operations are pruned.
-
 ## Next
 
 - **The platform in the console.** The console shows every service you can

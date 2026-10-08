@@ -35,9 +35,22 @@ func (e *Engine) Run(ctx context.Context) error {
 	}
 }
 
+// keepEvents is how many of its newest events each service keeps however old
+// they are, so a quiet service still shows what last happened to it.
+const keepEvents = 20
+
 func (e *Engine) pass(ctx context.Context) {
 	if err := e.removeOrphans(ctx); err != nil && ctx.Err() == nil {
 		log.Printf("orphan sweep: %v", err)
+	}
+	if e.cfg.HistoryRetention > 0 && time.Since(e.pruned) >= time.Hour {
+		e.pruned = time.Now()
+		events, ops, err := e.store.Prune(ctx, e.pruned.Add(-e.cfg.HistoryRetention), keepEvents)
+		if err != nil && ctx.Err() == nil {
+			log.Printf("prune history: %v", err)
+		} else if events+ops > 0 {
+			log.Printf("pruned %d events and %d operations older than %s", events, ops, e.cfg.HistoryRetention)
+		}
 	}
 	services, err := e.store.Services(ctx)
 	if err != nil {
