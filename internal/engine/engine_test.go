@@ -32,7 +32,18 @@ type fakeRuntime struct {
 
 func key(r store.Revision) string { return fmt.Sprintf("%s/%d", r.Service, r.Rev) }
 
-func (f *fakeRuntime) Resolve(_ context.Context, image string) (string, error) {
+func (f *fakeRuntime) Resolve(ctx context.Context, image string) (string, error) {
+	if strings.Contains(image, "slow") {
+		<-ctx.Done()
+		return "", errors.New("podman API unavailable")
+	}
+	if strings.Contains(image, "large") {
+		select {
+		case <-ctx.Done():
+			return "", errors.New("podman API unavailable")
+		case <-time.After(60 * time.Millisecond):
+		}
+	}
 	if strings.Contains(image, "missing") {
 		return "", errors.New("image pull failed: manifest unknown")
 	}
@@ -355,6 +366,22 @@ func TestPullFailureLeavesLiveRevision(t *testing.T) {
 	h.deploy(t, stack("hello", "docker.io/traefik/whoami:1", ""), "")
 	o := h.deploy(t, stack("hello", "docker.io/library/missing:1", ""), "")
 	if o.State != store.OpFailed || !strings.Contains(o.Reason, "pull failed") || h.service(t, "hello").Current != 1 {
+		t.Fatalf("%+v", o)
+	}
+}
+
+func TestPullTimeoutAppliesPerImageAndSaysSo(t *testing.T) {
+	h := setup(t)
+	h.cfg.PullTimeout = 20 * time.Millisecond
+	h.deploy(t, stack("hello", "docker.io/traefik/whoami:1", ""), "")
+	o := h.deploy(t, stack("hello", "docker.io/library/slow:1", ""), "")
+	if o.State != store.OpFailed || !strings.Contains(o.Reason, "raise -pull-timeout") || h.service(t, "hello").Current != 1 {
+		t.Fatalf("%+v", o)
+	}
+	// Each of two large images fits the timeout, though both together don't.
+	h.cfg.PullTimeout = 100 * time.Millisecond
+	two := "name: hello\ncontainers:\n  web:\n    image: docker.io/library/large:1\n    port: 80\n    health: {path: /health, timeout: 5s}\n  side: {image: docker.io/library/large-side:1}\n"
+	if o = h.deploy(t, []byte(two), ""); o.State != store.Succeeded {
 		t.Fatalf("%+v", o)
 	}
 }
