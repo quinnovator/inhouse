@@ -202,24 +202,44 @@ func (v *Vault) RegistryAuth(ctx context.Context, host string) (username, passwo
 	return a.Username, a.Password, true, nil
 }
 
+// matcherBudget caps the ciphertext bytes Redact keeps a matcher for. A value
+// is never longer than its ciphertext, so this also caps the matcher, which
+// otherwise would grow with every pinned version forever.
+var matcherBudget = 2 << 20
+
 // Redact replaces every current or pinned secret value in text. If any value
 // cannot be decrypted, it withholds the text entirely.
 func (v *Vault) Redact(ctx context.Context, text string) string {
-	m, err := v.matcher(ctx)
+	out, err := v.redact(ctx, text)
 	if err != nil {
 		return "[logs withheld: redaction unavailable]"
 	}
-	return m.redact(text)
+	return out
 }
 
-// matcher returns a matcher for every current and pinned value. It reads the
-// ciphertexts on every call, so a value is redacted as soon as it is stored,
-// but decrypts and rebuilds only when they have changed.
-func (v *Vault) matcher(ctx context.Context) (*matcher, error) {
+func (v *Vault) redact(ctx context.Context, text string) (string, error) {
 	all, err := v.store.AllSecretCiphertexts(ctx)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
+	size := 0
+	for _, ciphertext := range all {
+		size += len(ciphertext)
+	}
+	if size > matcherBudget {
+		return v.redactEach(all, text)
+	}
+	m, err := v.matcher(all)
+	if err != nil {
+		return "", err
+	}
+	return m.redact(text), nil
+}
+
+// matcher returns a matcher for the given ciphertexts, which Redact reads on
+// every call so a value is redacted as soon as it is stored. It decrypts and
+// rebuilds only when they have changed.
+func (v *Vault) matcher(all [][]byte) (*matcher, error) {
 	hashes := make([][32]byte, len(all))
 	for i, ciphertext := range all {
 		hashes[i] = sha256.Sum256(ciphertext)
@@ -243,6 +263,7 @@ func (v *Vault) matcher(ctx context.Context) (*matcher, error) {
 	for i, ciphertext := range all {
 		raw, ok := v.plain[hashes[i]]
 		if !ok {
+			var err error
 			if raw, err = v.decrypt(ciphertext); err != nil {
 				return nil, err
 			}
@@ -255,4 +276,25 @@ func (v *Vault) matcher(ctx context.Context) (*matcher, error) {
 	}
 	v.redactor, v.plain = newMatcher(values), plain
 	return v.redactor, nil
+}
+
+// redactEach is the fallback past matcherBudget. It decrypts one value at a
+// time and keeps none, so it is slower but holds at most one value, and it
+// drops any cached matcher.
+func (v *Vault) redactEach(all [][]byte, text string) (string, error) {
+	v.mu.Lock()
+	v.redactor, v.plain = nil, nil
+	v.mu.Unlock()
+	covered := make([]bool, len(text))
+	for _, ciphertext := range all {
+		raw, err := v.decrypt(ciphertext)
+		if err != nil {
+			return "", err
+		}
+		cover(covered, text, raw)
+		if a, ok := parseRegistryAuth(raw); ok {
+			cover(covered, text, []byte(a.Password))
+		}
+	}
+	return redactCovered(text, covered), nil
 }

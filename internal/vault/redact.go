@@ -5,26 +5,32 @@ import "strings"
 // matcher finds every occurrence of a set of values in one pass over a text
 // (Aho–Corasick) and redacts the union of their spans, so a value that
 // overlaps or contains another never leaves part of itself behind.
+//
+// Nodes live in flat arrays, about 17 bytes each and one per distinct value
+// prefix, with no allocation per node.
 type matcher struct {
-	root  [256]int32 // root's children by byte; -1 when absent
-	nodes []node
-}
-
-type node struct {
-	edges []edge
-	fail  int32
-	// longest is the length of the longest value that ends at this node or
-	// at any node on its fail chain; 0 when none does.
-	longest int32
-}
-
-type edge struct {
-	b  byte
-	to int32
+	root    [256]int32 // root's children by byte; -1 when absent
+	label   []byte     // byte on the edge into each node
+	first   []int32    // first child, or -1
+	sibling []int32    // next child of the same parent, or -1
+	fail    []int32
+	// longest is the length of the longest value that ends at a node or at
+	// any node on its fail chain; 0 when none does.
+	longest []int32
 }
 
 func newMatcher(values [][]byte) *matcher {
-	m := &matcher{nodes: []node{{}}}
+	size := 1
+	for _, v := range values {
+		size += len(v)
+	}
+	m := &matcher{
+		label:   make([]byte, 1, size),
+		first:   append(make([]int32, 0, size), -1),
+		sibling: append(make([]int32, 0, size), -1),
+		fail:    make([]int32, 1, size),
+		longest: make([]int32, 1, size),
+	}
 	for i := range m.root {
 		m.root[i] = -1
 	}
@@ -36,17 +42,22 @@ func newMatcher(values [][]byte) *matcher {
 		for _, b := range v {
 			c := m.child(n, b)
 			if c < 0 {
-				c = int32(len(m.nodes))
-				m.nodes = append(m.nodes, node{})
+				c = int32(len(m.label))
+				m.label = append(m.label, b)
+				m.first = append(m.first, -1)
+				m.fail = append(m.fail, 0)
+				m.longest = append(m.longest, 0)
 				if n == 0 {
+					m.sibling = append(m.sibling, -1)
 					m.root[b] = c
 				} else {
-					m.nodes[n].edges = append(m.nodes[n].edges, edge{b, c})
+					m.sibling = append(m.sibling, m.first[n])
+					m.first[n] = c
 				}
 			}
 			n = c
 		}
-		m.nodes[n].longest = int32(len(v))
+		m.longest[n] = int32(len(v))
 	}
 	// Breadth first, so every fail target is complete before it is used.
 	var queue []int32
@@ -58,15 +69,15 @@ func newMatcher(values [][]byte) *matcher {
 	for len(queue) > 0 {
 		n := queue[0]
 		queue = queue[1:]
-		for _, e := range m.nodes[n].edges {
-			f := m.nodes[n].fail
-			for f != 0 && m.child(f, e.b) < 0 {
-				f = m.nodes[f].fail
+		for c := m.first[n]; c >= 0; c = m.sibling[c] {
+			f := m.fail[n]
+			for f != 0 && m.child(f, m.label[c]) < 0 {
+				f = m.fail[f]
 			}
-			fail := max(m.child(f, e.b), 0)
-			m.nodes[e.to].fail = fail
-			m.nodes[e.to].longest = max(m.nodes[e.to].longest, m.nodes[fail].longest)
-			queue = append(queue, e.to)
+			fail := max(m.child(f, m.label[c]), 0)
+			m.fail[c] = fail
+			m.longest[c] = max(m.longest[c], m.longest[fail])
+			queue = append(queue, c)
 		}
 	}
 	return m
@@ -76,9 +87,9 @@ func (m *matcher) child(n int32, b byte) int32 {
 	if n == 0 {
 		return m.root[b]
 	}
-	for _, e := range m.nodes[n].edges {
-		if e.b == b {
-			return e.to
+	for c := m.first[n]; c >= 0; c = m.sibling[c] {
+		if m.label[c] == b {
+			return c
 		}
 	}
 	return -1
@@ -99,9 +110,9 @@ func (m *matcher) redact(text string) string {
 			if n == 0 {
 				break
 			}
-			n = m.nodes[n].fail
+			n = m.fail[n]
 		}
-		l := int(m.nodes[n].longest)
+		l := int(m.longest[n])
 		if l == 0 {
 			continue
 		}
@@ -125,5 +136,38 @@ func (m *matcher) redact(text string) string {
 		last = s.end
 	}
 	out.WriteString(text[last:])
+	return out.String()
+}
+
+// cover marks every byte of text inside any occurrence of value.
+func cover(covered []bool, text string, value []byte) {
+	if len(value) == 0 {
+		return
+	}
+	marked := 0
+	for i := 0; ; i++ {
+		j := strings.Index(text[i:], string(value))
+		if j < 0 {
+			return
+		}
+		i += j
+		for k := max(i, marked); k < i+len(value); k++ {
+			covered[k] = true
+		}
+		marked = i + len(value)
+	}
+}
+
+// redactCovered replaces each run of covered bytes with [REDACTED].
+func redactCovered(text string, covered []bool) string {
+	var out strings.Builder
+	out.Grow(len(text))
+	for i := 0; i < len(text); i++ {
+		if !covered[i] {
+			out.WriteByte(text[i])
+		} else if i == 0 || !covered[i-1] {
+			out.WriteString("[REDACTED]")
+		}
+	}
 	return out.String()
 }
