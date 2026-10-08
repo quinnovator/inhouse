@@ -57,6 +57,22 @@ example to merge into your policy. The essential grant:
 The capability name is yours to choose (use a domain you control); pass the
 same name to `inhoused -capability`.
 
+## The console
+
+Open `https://deploy.<tailnet>.ts.net` in a browser on a device in your
+tailnet. The console uses the same identity and grants as the CLI: it shows
+the services your grants cover, with their health, revisions, containers,
+logs and events, and offers only what your grants allow. Deployers can plan,
+deploy, roll back and delete their ephemeral services; admins can do
+everything and manage secrets.
+
+There is nothing to sign in to. The page's own files carry no data and load
+for anyone who can reach the control node; everything it shows comes from
+the `/v1` API, where every call is identified and authorized. Because the
+caller's tailnet identity is ambient, the API refuses changes requested by
+pages on other sites (`403 cross_origin`), so a link or form elsewhere can
+never act as you.
+
 ## Agents and MCP
 
 The control node serves an MCP server at `https://deploy.<tailnet>.ts.net/mcp`
@@ -124,9 +140,10 @@ directly; the tagged route limits well-behaved agents, not hostile ones.
 
 ## HTTP API
 
-The CLI uses a small JSON API on the same node. Every route needs a grant;
-errors return `{"error": {"code", "message", "hint", "operation_id"}}`.
-Mutating routes accept an `Idempotency-Key` header.
+The CLI and the console use a small JSON API on the same node. Every route
+needs a grant; errors return `{"error": {"code", "message", "hint",
+"operation_id"}}`. Mutating routes accept an `Idempotency-Key` header, and
+refuse browser requests from other origins.
 
 | Route | |
 | --- | --- |

@@ -164,3 +164,56 @@ func (c callerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	r.Header.Set("X-Test-Caller", string(c))
 	return http.DefaultTransport.RoundTrip(r)
 }
+
+func TestConsoleIsServedWithoutData(t *testing.T) {
+	srv, db := newServer(t)
+	for _, path := range []string{"/", "/services/blog", "/events"} {
+		req, _ := http.NewRequest("GET", srv.URL+path, nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || !strings.Contains(resp.Header.Get("Content-Security-Policy"), "script-src 'self'") || resp.Header.Get("ETag") == "" {
+			t.Fatal(path, resp.StatusCode, resp.Header)
+		}
+	}
+	if code, _ := call(t, srv, "unknown", "GET", "/assets/missing.js", ""); code != http.StatusNotFound {
+		t.Fatal("missing asset served", code)
+	}
+	if code, _ := call(t, srv, "unknown", "GET", "/v1/services", ""); code != http.StatusUnauthorized {
+		t.Fatal("API reachable without identity", code)
+	}
+	if events, _ := db.Events(context.Background(), store.EventQuery{}); len(events) != 0 {
+		t.Fatalf("loading the console was audited: %+v", events)
+	}
+}
+
+func TestCrossOriginBrowserRequestsCannotWrite(t *testing.T) {
+	srv, db := newServer(t)
+	send := func(method, path, site, body string) (int, string) {
+		req, _ := http.NewRequest(method, srv.URL+path, strings.NewReader(body))
+		req.Header.Set("X-Test-Caller", "agent")
+		req.Header.Set("Sec-Fetch-Site", site)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		raw, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(raw)
+	}
+	if code, body := send("POST", "/v1/deploy", "cross-site", preview); code != http.StatusForbidden || !strings.Contains(body, "cross_origin") {
+		t.Fatal(code, body)
+	}
+	if code, _ := send("GET", "/v1/services", "cross-site", ""); code != http.StatusOK {
+		t.Fatal("cross-origin read refused", code)
+	}
+	if code, body := send("POST", "/v1/deploy", "same-origin", preview); code != http.StatusOK {
+		t.Fatal("console deploy refused", code, body)
+	}
+	events, _ := db.Events(context.Background(), store.EventQuery{Limit: 100})
+	if len(events) == 0 || events[0].Kind != "denied" || events[0].Actor != "node:agent" || !strings.Contains(events[0].Message, "cross-origin") {
+		t.Fatalf("refusal not audited: %+v", events)
+	}
+}

@@ -5,3 +5,8 @@
 *.key
 *.env
 .DS_Store
+/console/node_modules/
+/console/dist/
+# The console build is embedded from here; only the placeholder is tracked.
+/internal/console/dist/*
+!/internal/console/dist/.gitkeep

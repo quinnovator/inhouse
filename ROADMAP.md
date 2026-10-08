@@ -20,10 +20,10 @@ need in [Discussions](https://github.com/quinnovator/inhouse/discussions).
 
 ## Next
 
-- **A console.** A web UI on your tailnet, behind the same identity and
-  grants as the CLI. It shows every service you can see, with its revisions,
-  operations, events and logs, and the platform itself: the daemon, its
-  hosts, and each host's available storage, CPU use and memory pressure.
+- **The platform in the console.** The console shows every service you can
+  see, with its revisions, events and logs. Next it shows the platform
+  itself: the daemon, its hosts, and each host's available storage, CPU use
+  and memory pressure, plus the operations running on each service.
 - **Bundled agent skills.** Skills shipped with inhouse that teach agents to
   write stack specs, deploy, debug and roll back on the platform, so they
   don't have to work it out from the MCP tools alone.
