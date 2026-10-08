@@ -546,6 +546,7 @@ func TestStoppedListenerIsRestartedWithBackoff(t *testing.T) {
 		t.Fatal("restarted within the backoff")
 	}
 	h.cfg.RestartBackoff = time.Millisecond
+	time.Sleep(5 * time.Millisecond)
 	if _, err := h.probe(ctx, "hello"); err == nil || !strings.Contains(err.Error(), "did not come online") {
 		t.Fatal(err)
 	}
