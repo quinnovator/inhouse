@@ -6,7 +6,6 @@ need in [Discussions](https://github.com/quinnovator/inhouse/discussions).
 
 ## Now: make the alpha trustworthy
 
-- **Large images deploy.** Image pulls get a configurable timeout.
 - **Bounded history.** Old events and operations are pruned.
 
 ## Next

@@ -55,6 +55,9 @@ type VolumePaths interface {
 
 type Podman struct {
 	client *http.Client
+	// pulls has no overall timeout: a pull streams for as long as the image
+	// takes, bounded by its context (the engine's -pull-timeout).
+	pulls *http.Client
 	// Offset returns where the service's container ID 0 maps (see userns).
 	Offset func(ctx context.Context, service string) (int, error)
 	// Network is the pod network mode: pasta (default) or slirp4netns.
@@ -68,17 +71,21 @@ func New(socket string) *Podman {
 	tr := &http.Transport{Proxy: nil, DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", socket)
 	}}
-	return &Podman{client: &http.Client{
-		Timeout:       5 * time.Minute,
-		Transport:     tr,
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}}
+	noRedirect := func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &Podman{
+		client: &http.Client{Timeout: 5 * time.Minute, Transport: tr, CheckRedirect: noRedirect},
+		pulls:  &http.Client{Transport: tr, CheckRedirect: noRedirect},
+	}
 }
 
 func (p *Podman) Close() { p.client.CloseIdleConnections() }
 
 func (p *Podman) do(req *http.Request, path string) (*http.Response, error) {
-	resp, err := p.client.Do(req)
+	return p.send(p.client, req, path)
+}
+
+func (p *Podman) send(client *http.Client, req *http.Request, path string) (*http.Response, error) {
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, errors.New("podman API unavailable")
 	}

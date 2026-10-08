@@ -71,7 +71,7 @@ func (p *Podman) pull(ctx context.Context, image, policy string) error {
 			req.Header.Set("X-Registry-Auth", base64.URLEncoding.EncodeToString(raw))
 		}
 	}
-	resp, err := p.do(req, "/images/pull")
+	resp, err := p.send(p.pulls, req, "/images/pull")
 	if err != nil {
 		return err
 	}

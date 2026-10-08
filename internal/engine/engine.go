@@ -95,6 +95,8 @@ type Config struct {
 	FailedRetention time.Duration
 	// OrphanGrace is how old an unknown labelled pod must be before removal.
 	OrphanGrace time.Duration
+	// PullTimeout bounds pulling each image.
+	PullTimeout time.Duration
 }
 
 func DefaultConfig() Config {
@@ -112,6 +114,7 @@ func DefaultConfig() Config {
 		Interval:          30 * time.Second,
 		FailedRetention:   24 * time.Hour,
 		OrphanGrace:       10 * time.Minute,
+		PullTimeout:       30 * time.Minute,
 	}
 }
 

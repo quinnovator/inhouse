@@ -129,6 +129,7 @@ HTTPS for all services pauses for the few seconds the daemon is restarting.
 | `-podman-network` | `pasta` | Or `slirp4netns` |
 | `-control-hostname` | `deploy` | The control node's name |
 | `-port-range` | `20000-29999` | Loopback ports for pod ingress |
+| `-pull-timeout` | `30m` | How long pulling each image may take |
 | `-subid-base`, `-subid-count` | `1000000`, `4194304` | Must match `/etc/subuid` and `/etc/subgid` |
 
 ## 4. Backups

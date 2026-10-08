@@ -265,7 +265,29 @@ func fakeRegistryPodman(t *testing.T, repoDigests []string, missing map[string]b
 		_ = json.NewEncoder(w).Encode(map[string]any{"RepoDigests": repoDigests})
 	}))
 	t.Cleanup(server.Close)
-	return &Podman{client: &http.Client{Transport: rewriteTransport{server.URL, http.DefaultTransport}}}, &pulls
+	c := &http.Client{Transport: rewriteTransport{server.URL, http.DefaultTransport}}
+	return &Podman{client: c, pulls: c}, &pulls
+}
+
+func TestPullsOutlastTheAPITimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for range 3 {
+			_, _ = w.Write([]byte(`{"stream":"copying blob"}` + "\n"))
+			w.(http.Flusher).Flush()
+			time.Sleep(50 * time.Millisecond)
+		}
+	}))
+	t.Cleanup(server.Close)
+	tr := rewriteTransport{server.URL, http.DefaultTransport}
+	p := &Podman{client: &http.Client{Transport: tr, Timeout: 50 * time.Millisecond}, pulls: &http.Client{Transport: tr}}
+	if err := p.pull(context.Background(), "docker.io/library/large:1", "always"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := p.pull(ctx, "docker.io/library/large:1", "always"); err == nil {
+		t.Fatal("pull outlived its context")
+	}
 }
 
 func TestResolvePinsOnlyADigestTheRegistryServes(t *testing.T) {
