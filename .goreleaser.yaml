@@ -1,4 +1,9 @@
 version: 2
+before:
+  hooks:
+    # Built into inhoused with go:embed (internal/console/dist).
+    - pnpm -C console install --frozen-lockfile --ignore-scripts
+    - pnpm -C console build
 builds:
   - id: inhoused
     main: ./cmd/inhoused

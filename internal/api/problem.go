@@ -1,7 +1,8 @@
 // Package api exposes the engine over HTTPS on the control node: a small
-// JSON API under /v1 (used by the inhouse CLI) and an MCP server at /mcp
-// (used by agents). Both identify the caller with WhoIs and call the same
-// engine methods, so behavior and permissions are identical.
+// JSON API under /v1 (used by the inhouse CLI and the web console) and an
+// MCP server at /mcp (used by agents). Both identify the caller with WhoIs
+// and call the same engine methods, so behavior and permissions are
+// identical.
 package api
 
 import (

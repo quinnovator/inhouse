@@ -23,7 +23,7 @@ and keep reality matching a SQLite database.**
 ## The picture
 
 ```
- laptop ─┐                    ┌─ deploy.<tailnet>.ts.net   control: /v1 API, /mcp
+ laptop ─┐                    ┌─ deploy.<tailnet>.ts.net   control: console, /v1 API, /mcp
  agent  ─┼── tailnet (WireGuard) ─┤
  phone  ─┘                    └─ blog.<tailnet>.ts.net     one node per service
                                        │
@@ -267,6 +267,8 @@ you, separately.
 | `internal/tailnet` | tsnet nodes and the Tailscale API (keys, device deletion) |
 | `internal/edge` | Per-service HTTPS listeners and the swapping proxy |
 | `internal/api` | `/v1` JSON API and `/mcp`, over the same engine |
+| `internal/console` | Serves the embedded web console build |
+| `console/` | The web console's source (TanStack Start, single-page); calls `/v1` |
 | `internal/mcpbridge` | stdio MCP bridge, as a device or as a tagged agent |
 
 Invariants worth protecting when changing the code: write state before acting;

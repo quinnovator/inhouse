@@ -1,2 +1,5 @@
 [tools]
 go = "1.26.6"
+# The console (console/), built into inhoused.
+node = "24"
+pnpm = "11.24.0"
