@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"filippo.io/age"
 	"github.com/quinnovator/inhouse/internal/spec"
@@ -33,6 +34,12 @@ const RegistryPrefix = "registry-auth/"
 type Vault struct {
 	store    *store.Store
 	identity *age.X25519Identity
+
+	mu sync.Mutex
+	// redactor matches every value in plain, which holds the decrypted
+	// values Redact last saw, keyed by ciphertext hash.
+	redactor *matcher
+	plain    map[[32]byte][]byte
 }
 
 // Open loads the age identity at keyFile, generating it on first start.
@@ -60,7 +67,7 @@ func Open(db *store.Store, keyFile string) (*Vault, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &Vault{db, id}, nil
+		return &Vault{store: db, identity: id}, nil
 	}
 	if err != nil {
 		return nil, err
@@ -73,7 +80,7 @@ func Open(db *store.Store, keyFile string) (*Vault, error) {
 	if err != nil {
 		return nil, errors.New("invalid age identity file")
 	}
-	return &Vault{db, id}, nil
+	return &Vault{store: db, identity: id}, nil
 }
 
 // ValidName accepts a stack-referenceable name or registry-auth/<host>.
@@ -195,22 +202,99 @@ func (v *Vault) RegistryAuth(ctx context.Context, host string) (username, passwo
 	return a.Username, a.Password, true, nil
 }
 
+// matcherBudget caps the ciphertext bytes Redact keeps a matcher for. A value
+// is never longer than its ciphertext, so this also caps the matcher, which
+// otherwise would grow with every pinned version forever.
+var matcherBudget = 2 << 20
+
 // Redact replaces every current or pinned secret value in text. If any value
 // cannot be decrypted, it withholds the text entirely.
 func (v *Vault) Redact(ctx context.Context, text string) string {
-	all, err := v.store.AllSecretCiphertexts(ctx)
+	out, err := v.redact(ctx, text)
 	if err != nil {
 		return "[logs withheld: redaction unavailable]"
 	}
+	return out
+}
+
+func (v *Vault) redact(ctx context.Context, text string) (string, error) {
+	all, err := v.store.AllSecretCiphertexts(ctx)
+	if err != nil {
+		return "", err
+	}
+	size := 0
+	for _, ciphertext := range all {
+		size += len(ciphertext)
+	}
+	if size > matcherBudget {
+		return v.redactEach(all, text)
+	}
+	m, err := v.matcher(all)
+	if err != nil {
+		return "", err
+	}
+	return m.redact(text), nil
+}
+
+// matcher returns a matcher for the given ciphertexts, which Redact reads on
+// every call so a value is redacted as soon as it is stored. It decrypts and
+// rebuilds only when they have changed.
+func (v *Vault) matcher(all [][]byte) (*matcher, error) {
+	hashes := make([][32]byte, len(all))
+	for i, ciphertext := range all {
+		hashes[i] = sha256.Sum256(ciphertext)
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	// The ciphertexts are distinct, so the same count and no unseen hash
+	// means the same set.
+	same := v.redactor != nil && len(hashes) == len(v.plain)
+	for _, h := range hashes {
+		if _, ok := v.plain[h]; !ok {
+			same = false
+			break
+		}
+	}
+	if same {
+		return v.redactor, nil
+	}
+	plain := make(map[[32]byte][]byte, len(all))
+	values := make([][]byte, 0, len(all))
+	for i, ciphertext := range all {
+		raw, ok := v.plain[hashes[i]]
+		if !ok {
+			var err error
+			if raw, err = v.decrypt(ciphertext); err != nil {
+				return nil, err
+			}
+		}
+		plain[hashes[i]] = raw
+		values = append(values, raw)
+		if a, ok := parseRegistryAuth(raw); ok {
+			values = append(values, []byte(a.Password))
+		}
+	}
+	v.redactor, v.plain = newMatcher(values), plain
+	return v.redactor, nil
+}
+
+// redactEach is the fallback past matcherBudget. It decrypts one value at a
+// time and keeps none, so it is slower but holds at most one value, and it
+// drops any cached matcher.
+func (v *Vault) redactEach(all [][]byte, text string) (string, error) {
+	v.mu.Lock()
+	v.redactor, v.plain = nil, nil
+	v.mu.Unlock()
+	covered := make([]bool, len(text))
 	for _, ciphertext := range all {
 		raw, err := v.decrypt(ciphertext)
 		if err != nil {
-			return "[logs withheld: redaction unavailable]"
+			return "", err
 		}
-		text = strings.ReplaceAll(text, string(raw), "[REDACTED]")
+		cover(covered, text, raw)
 		if a, ok := parseRegistryAuth(raw); ok {
-			text = strings.ReplaceAll(text, a.Password, "[REDACTED]")
+			cover(covered, text, []byte(a.Password))
 		}
 	}
-	return text
+	return redactCovered(text, covered), nil
 }
