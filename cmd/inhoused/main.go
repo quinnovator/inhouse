@@ -58,6 +58,7 @@ func run() error {
 	ports := flag.String("port-range", fmt.Sprintf("%d-%d", cfg.PortLow, cfg.PortHigh), "loopback ports pods publish their ingress on")
 	subidBase := flag.Int("subid-base", 1000000, "first subordinate ID of the inhouse user (see /etc/subuid)")
 	subidCount := flag.Int("subid-count", 4194304, "number of subordinate IDs the inhouse user owns")
+	flag.DurationVar(&cfg.PullTimeout, "pull-timeout", cfg.PullTimeout, "how long pulling each image may take")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 	if *showVersion {
@@ -69,6 +70,9 @@ func run() error {
 	}
 	if _, err := fmt.Sscanf(*ports, "%d-%d", &cfg.PortLow, &cfg.PortHigh); err != nil || cfg.PortLow < 1024 || cfg.PortHigh > 65535 || cfg.PortLow > cfg.PortHigh {
 		return errors.New("-port-range must look like 20000-29999")
+	}
+	if cfg.PullTimeout <= 0 {
+		return errors.New("-pull-timeout must be positive")
 	}
 	if *subidCount < userns.Size {
 		return errors.New("-subid-count must be at least " + strconv.Itoa(userns.Size))

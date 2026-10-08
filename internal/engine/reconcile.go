@@ -361,7 +361,7 @@ func (e *Engine) revive(ctx context.Context, r store.Revision) error {
 	e.edges.Clear(r.Service)
 	for _, name := range r.Spec.Order {
 		image := r.Spec.Containers[name].Image
-		resolved, err := e.runtime.Resolve(ctx, image)
+		resolved, err := e.resolve(ctx, image)
 		if err != nil {
 			return err
 		}
@@ -518,11 +518,9 @@ func (e *Engine) step(ctx context.Context, o store.Operation, r store.Revision) 
 // Rollbacks keep the versions their target was deployed with.
 func (e *Engine) pin(ctx context.Context, o store.Operation, r store.Revision) (spec.Stack, error) {
 	s := r.Spec
-	pull, cancel := context.WithTimeout(ctx, 5*time.Minute)
-	defer cancel()
 	for _, name := range s.Order {
 		c := s.Containers[name]
-		image, err := e.runtime.Resolve(pull, c.Image)
+		image, err := e.resolve(ctx, c.Image)
 		if err != nil {
 			return s, fmt.Errorf("%s: %w", name, err)
 		}
@@ -535,6 +533,17 @@ func (e *Engine) pin(ctx context.Context, o store.Operation, r store.Revision) (
 		}
 	}
 	return s, nil
+}
+
+// resolve pulls one image, giving it PullTimeout.
+func (e *Engine) resolve(ctx context.Context, image string) (string, error) {
+	pull, cancel := context.WithTimeout(ctx, e.cfg.PullTimeout)
+	defer cancel()
+	resolved, err := e.runtime.Resolve(pull, image)
+	if err != nil && ctx.Err() == nil && errors.Is(pull.Err(), context.DeadlineExceeded) {
+		return "", fmt.Errorf("pulling %s took longer than %s; raise -pull-timeout for large images", image, e.cfg.PullTimeout)
+	}
+	return resolved, err
 }
 
 // start brings up the candidate and cuts over to it once healthy.
