@@ -139,7 +139,7 @@ func TestMCPBindsEachRequestToItsCaller(t *testing.T) {
 			t.Fatalf("%s saw %s", caller, raw)
 		}
 		tools, err := session.ListTools(context.Background(), nil)
-		if err != nil || len(tools.Tools) != 13 {
+		if err != nil || len(tools.Tools) != 18 {
 			t.Fatal(len(tools.Tools), err)
 		}
 		for _, tool := range tools.Tools {
@@ -215,5 +215,24 @@ func TestCrossOriginBrowserRequestsCannotWrite(t *testing.T) {
 	events, _ := db.Events(context.Background(), store.EventQuery{Limit: 100})
 	if len(events) == 0 || events[0].Kind != "denied" || events[0].Actor != "node:agent" || !strings.Contains(events[0].Message, "cross-origin") {
 		t.Fatalf("refusal not audited: %+v", events)
+	}
+}
+
+func TestServiceActionsThroughHTTP(t *testing.T) {
+	srv, _ := newServer(t)
+	if code, body := call(t, srv, "agent", "POST", "/v1/deploy", preview); code != http.StatusOK {
+		t.Fatal(code, body)
+	}
+	for _, action := range []string{"restart", "redeploy", "stop", "start", "extend"} {
+		// No reconciler runs here, so preview-a never gets a live revision.
+		if code, body := call(t, srv, "agent", "POST", "/v1/services/preview-a/"+action, ""); code != http.StatusConflict || !strings.Contains(body, "live revision") {
+			t.Fatal(action, code, body)
+		}
+		if code, _ := call(t, srv, "agent", "POST", "/v1/services/blog/"+action, ""); code != http.StatusForbidden {
+			t.Fatal(action, "outside the grant:", code)
+		}
+		if code, _ := call(t, srv, "admin", "POST", "/v1/services/missing/"+action, ""); code != http.StatusNotFound {
+			t.Fatal(action, "of a missing service:", code)
+		}
 	}
 }

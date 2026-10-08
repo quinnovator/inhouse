@@ -73,6 +73,19 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/services/{name}", func(w http.ResponseWriter, r *http.Request) {
 		reply(w, r, e)(e.Delete(r.Context(), r.PathValue("name"), r.Header.Get("Idempotency-Key")))
 	})
+	for action, start := range map[string]func(context.Context, string, string) (store.Operation, error){
+		"restart":  e.Restart,
+		"redeploy": e.Redeploy,
+		"stop":     e.Stop,
+		"start":    e.Start,
+	} {
+		mux.HandleFunc("POST /v1/services/{name}/"+action, func(w http.ResponseWriter, r *http.Request) {
+			reply(w, r, e)(start(r.Context(), r.PathValue("name"), r.Header.Get("Idempotency-Key")))
+		})
+	}
+	mux.HandleFunc("POST /v1/services/{name}/extend", func(w http.ResponseWriter, r *http.Request) {
+		reply(w, r, e)(e.Extend(r.Context(), r.PathValue("name")))
+	})
 	mux.HandleFunc("GET /v1/operations/{id}", func(w http.ResponseWriter, r *http.Request) {
 		wait, err := intParam(r, "wait")
 		if err != nil {

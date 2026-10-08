@@ -79,6 +79,9 @@ func (e *Engine) immutable(ctx context.Context, svc store.Service, stack spec.St
 	if svc.Deleted != 0 {
 		return &store.Conflict{Message: "service is being deleted; wait for its delete operation"}
 	}
+	if svc.Stopped != 0 {
+		return &store.Conflict{Message: "service is stopped; start it first"}
+	}
 	if svc.Kind != store.KindOf(stack) {
 		return invalidf("service %s is %s; delete it before redeploying it as %s", svc.Name, svc.Kind, store.KindOf(stack))
 	}
@@ -186,6 +189,142 @@ func (e *Engine) Delete(ctx context.Context, name, key string) (store.Operation,
 	return o, err
 }
 
+// live returns a service and its live revision, for a request that acts on
+// it as a deploy would: the caller needs a deployer grant that covers the
+// live revision's spec.
+func (e *Engine) live(ctx context.Context, name string) (store.Service, store.Revision, error) {
+	p := authz.From(ctx)
+	svc, err := e.store.Service(ctx, name)
+	if err != nil {
+		return svc, store.Revision{}, err
+	}
+	if svc.Deleted != 0 {
+		return svc, store.Revision{}, &store.Conflict{Message: "service is being deleted; wait for its delete operation"}
+	}
+	if svc.Current == 0 {
+		return svc, store.Revision{}, &store.Conflict{Message: "service has no live revision yet"}
+	}
+	live, err := e.store.Revision(ctx, name, svc.Current)
+	if err != nil {
+		return svc, live, err
+	}
+	return svc, live, p.RequireDeploy(live.Spec)
+}
+
+// request checks what every request on an existing service needs, and
+// returns the operation an idempotency key already created, if any.
+func (e *Engine) request(ctx context.Context, name, key, hash string) (store.Operation, bool, error) {
+	if err := validService(name); err != nil {
+		return store.Operation{}, false, err
+	}
+	if err := authz.From(ctx).RequireRead(name); err != nil {
+		return store.Operation{}, false, err
+	}
+	if err := validKey(key); err != nil {
+		return store.Operation{}, false, err
+	}
+	return e.replay(ctx, key, hash)
+}
+
+// Restart deploys an exact copy of the live revision as a new revision, as
+// a rollback to it would: the same images and secret versions. It follows
+// the service's update strategy, so a rolling service keeps serving.
+func (e *Engine) Restart(ctx context.Context, name, key string) (store.Operation, error) {
+	p := authz.From(ctx)
+	hash := requestHash(p.ID, store.Restart, name)
+	if o, ok, err := e.request(ctx, name, key, hash); ok || err != nil {
+		return e.visible(ctx, o, err)
+	}
+	svc, live, err := e.live(ctx, name)
+	if err != nil {
+		return store.Operation{}, err
+	}
+	if err = e.immutable(ctx, svc, live.Spec); err != nil {
+		return store.Operation{}, err
+	}
+	o, err := e.store.Record(ctx, store.Request{Stack: live.Spec, Kind: store.Restart, Key: key, RequestHash: hash, Actor: p.ID, PortLow: e.cfg.PortLow, PortHigh: e.cfg.PortHigh})
+	if err == nil {
+		e.Nudge()
+	}
+	return e.visible(ctx, o, err)
+}
+
+// Redeploy deploys the live revision's spec again with every secret pinned
+// to its current value, so a rotated secret reaches the service. Images
+// stay at the same digests. If no secret changed, it is a no-op, as any
+// unchanged deploy is.
+func (e *Engine) Redeploy(ctx context.Context, name, key string) (store.Operation, error) {
+	p := authz.From(ctx)
+	hash := requestHash(p.ID, "redeploy", name)
+	if o, ok, err := e.request(ctx, name, key, hash); ok || err != nil {
+		return e.visible(ctx, o, err)
+	}
+	svc, live, err := e.live(ctx, name)
+	if err != nil {
+		return store.Operation{}, err
+	}
+	if err = e.immutable(ctx, svc, live.Spec); err != nil {
+		return store.Operation{}, err
+	}
+	o, err := e.store.Record(ctx, store.Request{Stack: live.Spec, Kind: store.Deploy, Key: key, RequestHash: hash, Actor: p.ID, PortLow: e.cfg.PortLow, PortHigh: e.cfg.PortHigh})
+	if err == nil {
+		e.Nudge()
+	}
+	return e.visible(ctx, o, err)
+}
+
+// Stop takes a service offline without deleting it: its live revision stops
+// and its address answers 503 until it is started. Revisions, volumes and
+// the node are kept, and an ephemeral service still expires on time.
+func (e *Engine) Stop(ctx context.Context, name, key string) (store.Operation, error) {
+	return e.setStopped(ctx, store.Stop, name, key)
+}
+
+// Start runs a stopped service's live revision again.
+func (e *Engine) Start(ctx context.Context, name, key string) (store.Operation, error) {
+	return e.setStopped(ctx, store.Start, name, key)
+}
+
+func (e *Engine) setStopped(ctx context.Context, kind store.OpKind, name, key string) (store.Operation, error) {
+	p := authz.From(ctx)
+	hash := requestHash(p.ID, kind, name)
+	if o, ok, err := e.request(ctx, name, key, hash); ok || err != nil {
+		return o, err
+	}
+	if _, _, err := e.live(ctx, name); err != nil {
+		return store.Operation{}, err
+	}
+	record := e.store.StartService
+	if kind == store.Stop {
+		record = e.store.StopService
+	}
+	o, err := record(ctx, name, p.ID, key, hash)
+	if err == nil {
+		e.Nudge()
+	}
+	return o, err
+}
+
+// Extend restarts an ephemeral service's TTL from now, as deploying it
+// unchanged would, and returns the service.
+func (e *Engine) Extend(ctx context.Context, name string) (ServiceView, error) {
+	if _, _, err := e.request(ctx, name, "", ""); err != nil {
+		return ServiceView{}, err
+	}
+	svc, live, err := e.live(ctx, name)
+	if err != nil {
+		return ServiceView{}, err
+	}
+	if svc.Kind != store.Ephemeral {
+		return ServiceView{}, invalidf("service %s is persistent; only ephemeral services expire", name)
+	}
+	if err = e.store.Extend(ctx, live, authz.From(ctx).ID); err != nil {
+		return ServiceView{}, err
+	}
+	svc, err = e.store.Service(ctx, name)
+	return view(svc), err
+}
+
 // ---- reads ----
 
 type ServiceView struct {
@@ -228,7 +367,8 @@ func (e *Engine) List(ctx context.Context) ([]ServiceView, error) {
 	return out, nil
 }
 
-// Get returns a service with its ten newest revisions and five newest events.
+// Get returns a service with its ten newest revisions, plus its live
+// revision if that is older, and its five newest events.
 func (e *Engine) Get(ctx context.Context, name string) (ServiceDetail, error) {
 	if err := authz.From(ctx).RequireRead(name); err != nil {
 		return ServiceDetail{}, err
@@ -242,7 +382,13 @@ func (e *Engine) Get(ctx context.Context, name string) (ServiceDetail, error) {
 		return ServiceDetail{}, err
 	}
 	if len(revs) > 10 {
+		older := revs[10:]
 		revs = revs[:10]
+		for _, r := range older {
+			if r.Rev == svc.Current {
+				revs = append(revs, r)
+			}
+		}
 	}
 	events, err := e.store.Events(ctx, store.EventQuery{Service: name, Limit: 5})
 	return ServiceDetail{view(svc), revs, events}, err

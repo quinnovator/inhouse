@@ -22,6 +22,7 @@ type fakeRuntime struct {
 	starts    map[string]int
 	stops     map[string]int
 	unhealthy map[int]bool // revisions whose checks fail
+	partial   bool         // Running reports false: some container is down
 	logs      string
 	upHook    func(store.Revision)
 	strays    []store.Revision // labelled pods with no revision row
@@ -56,7 +57,7 @@ func (f *fakeRuntime) Up(_ context.Context, r store.Revision) error {
 func (f *fakeRuntime) Running(_ context.Context, r store.Revision) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.running[key(r)], nil
+	return f.running[key(r)] && !f.partial, nil
 }
 func (f *fakeRuntime) Check(_ context.Context, r store.Revision, _ string) error {
 	f.mu.Lock()
@@ -546,6 +547,7 @@ func TestStoppedListenerIsRestartedWithBackoff(t *testing.T) {
 		t.Fatal("restarted within the backoff")
 	}
 	h.cfg.RestartBackoff = time.Millisecond
+	time.Sleep(5 * time.Millisecond)
 	if _, err := h.probe(ctx, "hello"); err == nil || !strings.Contains(err.Error(), "did not come online") {
 		t.Fatal(err)
 	}
@@ -803,5 +805,219 @@ func TestPlanShowsKeysNotValues(t *testing.T) {
 	p, err = h.Plan(admin(), raw)
 	if err != nil || !p.MayApply || p.Exists || strings.Contains(fmt.Sprint(p), "very-secret-env") || p.After["web"].EnvKeys[0] != "API_KEY" {
 		t.Fatalf("%+v %v", p, err)
+	}
+}
+
+func TestRestartIsANewRevisionThatFollowsTheUpdateStrategy(t *testing.T) {
+	h := setup(t)
+	ctx := context.Background()
+	if _, err := h.Restart(admin(), "hello", ""); !errors.Is(err, store.ErrNotFound) {
+		t.Fatal(err)
+	}
+	h.deploy(t, stack("hello", "docker.io/traefik/whoami:1", ""), "")
+	h.rt.upHook = func(r store.Revision) {
+		if r.Rev == 2 && !h.rt.running["hello/1"] {
+			t.Error("a rolling restart stopped the live revision before its copy was healthy")
+		}
+	}
+	o, err := h.Restart(admin(), "hello", "rs")
+	if o = h.run(t, o, err); o.State != store.Succeeded || o.Kind != store.Restart || o.Rev != 2 || h.service(t, "hello").Current != 2 {
+		t.Fatalf("%+v", o)
+	}
+	r1, _ := h.db.Revision(ctx, "hello", 1)
+	r2, _ := h.db.Revision(ctx, "hello", 2)
+	if r1.Hash != r2.Hash || h.edges.ports["hello"] != r2.Port {
+		t.Fatal("restart did not cut over to an exact copy of the live revision")
+	}
+	if again, err := h.Restart(admin(), "hello", "rs"); err != nil || again.ID != o.ID {
+		t.Fatal("restart retry with the same key was not idempotent", err)
+	}
+	if _, err = h.Restart(agent("node:a"), "hello", ""); !errors.Is(err, authz.ErrForbidden) {
+		t.Fatal(err)
+	}
+
+	// A recreate service's live revision stops first.
+	h.deploy(t, withVolume(stack("db", "docker.io/library/postgres:17", "")), "")
+	h.rt.upHook = func(r store.Revision) {
+		if r.Rev == 2 && h.rt.running["db/1"] {
+			t.Error("a recreate restart started the copy while the old writer was running")
+		}
+	}
+	o, err = h.Restart(admin(), "db", "")
+	if o = h.run(t, o, err); o.State != store.Succeeded || h.service(t, "db").Current != 2 || !h.vols.snapshots["db/2"] {
+		t.Fatalf("%+v", o)
+	}
+}
+
+func TestRedeployPinsCurrentSecretValues(t *testing.T) {
+	h := setup(t)
+	ctx := context.Background()
+	if err := h.SetSecret(admin(), "db-password", "v1"); err != nil {
+		t.Fatal(err)
+	}
+	raw := []byte(strings.Replace(string(stack("app", "docker.io/library/app:1", "")), "port: 80\n", "port: 80\n    secrets: {DB_PASSWORD: db-password}\n", 1))
+	h.deploy(t, raw, "")
+
+	// Nothing changed: a no-op on the live revision.
+	o, err := h.Redeploy(admin(), "app", "")
+	if o = h.run(t, o, err); o.State != store.Succeeded || o.Kind != store.Deploy || o.Rev != 1 {
+		t.Fatalf("%+v", o)
+	}
+	if revs, _ := h.db.Revisions(ctx, "app"); len(revs) != 1 {
+		t.Fatalf("unchanged redeploy left %d revisions", len(revs))
+	}
+
+	_ = h.SetSecret(admin(), "db-password", "v2")
+	o, err = h.Redeploy(admin(), "app", "")
+	if o = h.run(t, o, err); o.State != store.Succeeded || o.Rev != 2 || h.service(t, "app").Current != 2 {
+		t.Fatalf("%+v", o)
+	}
+	r1, _ := h.db.Revision(ctx, "app", 1)
+	r2, _ := h.db.Revision(ctx, "app", 2)
+	if r1.Spec.Containers["web"].Image != r2.Spec.Containers["web"].Image {
+		t.Fatal("redeploy changed the image")
+	}
+	if v1, v2 := r1.Spec.Containers["web"].SecretVersions["db-password"], r2.Spec.Containers["web"].SecretVersions["db-password"]; v1 == v2 || len(v2) != 64 {
+		t.Fatal("redeploy did not pin the current secret value")
+	}
+}
+
+func TestStopAndStart(t *testing.T) {
+	h := setup(t)
+	ctx := context.Background()
+	h.deploy(t, stack("hello", "docker.io/traefik/whoami:1", ""), "")
+	port := h.edges.ports["hello"]
+
+	o, err := h.Stop(admin(), "hello", "stop")
+	if o = h.run(t, o, err); o.State != store.Succeeded || o.Kind != store.Stop || o.Rev != 1 {
+		t.Fatalf("%+v", o)
+	}
+	s := h.service(t, "hello")
+	if s.Stopped == 0 || s.Health != "" || h.rt.running["hello/1"] || h.edges.ports["hello"] != 0 || !h.edges.nodes["hello"] {
+		t.Fatalf("not stopped, or its node went away: %+v", s)
+	}
+	if again, err := h.Stop(admin(), "hello", "stop"); err != nil || again.ID != o.ID {
+		t.Fatal("stop retry with the same key was not idempotent", err)
+	}
+
+	// Stopped stays stopped: probes and passes leave it alone, and changes
+	// that would run it are refused.
+	if _, err = h.probe(ctx, "hello"); err != nil {
+		t.Fatal(err)
+	}
+	if err = h.reconcile(ctx, "hello"); err != nil {
+		t.Fatal(err)
+	}
+	if h.rt.running["hello/1"] || h.rt.starts["hello/1"] != 1 {
+		t.Fatal("a stopped revision was started")
+	}
+	// A pod with one container down still has its others stopped.
+	h.rt.running["hello/1"] = true
+	h.rt.partial = true
+	if err = h.reconcile(ctx, "hello"); err != nil || h.rt.running["hello/1"] {
+		t.Fatal("a partly running stopped revision was left running", err)
+	}
+	h.rt.partial = false
+	var conflict *store.Conflict
+	for name, call := range map[string]func() error{
+		"stop": func() error { _, err := h.Stop(admin(), "hello", ""); return err },
+		"deploy": func() error {
+			_, err := h.Deploy(admin(), stack("hello", "docker.io/traefik/whoami:2", ""), "")
+			return err
+		},
+		"restart":  func() error { _, err := h.Restart(admin(), "hello", ""); return err },
+		"redeploy": func() error { _, err := h.Redeploy(admin(), "hello", ""); return err },
+	} {
+		if !errors.As(call(), &conflict) {
+			t.Fatal(name, "accepted while stopped")
+		}
+	}
+	plan, err := h.Plan(admin(), stack("hello", "docker.io/traefik/whoami:2", ""))
+	if err != nil || plan.MayApply {
+		t.Fatalf("plan offers a deploy to a stopped service: %+v", plan)
+	}
+
+	o, err = h.Start(admin(), "hello", "")
+	if o = h.run(t, o, err); o.State != store.Succeeded || o.Kind != store.Start {
+		t.Fatalf("%+v", o)
+	}
+	if s = h.service(t, "hello"); s.Stopped != 0 || s.Health != store.Healthy || !h.rt.running["hello/1"] || h.edges.ports["hello"] != port {
+		t.Fatalf("not started: %+v", s)
+	}
+	if _, err = h.Start(admin(), "hello", ""); !errors.As(err, &conflict) {
+		t.Fatal("started a service that is not stopped")
+	}
+	if got := h.kinds(t, "hello"); !strings.HasSuffix(got, "stop succeeded start succeeded") {
+		t.Fatal(got)
+	}
+
+	// A start that fails leaves the service degraded, not its revision
+	// failed, and the reconciler restarts it like any live revision.
+	o, err = h.Stop(admin(), "hello", "")
+	h.run(t, o, err)
+	h.rt.unhealthy[1] = true
+	o, err = h.Start(admin(), "hello", "")
+	if o = h.run(t, o, err); o.State != store.OpFailed || !strings.Contains(o.Reason, "health check timed out") {
+		t.Fatalf("%+v", o)
+	}
+	r1, _ := h.db.Revision(ctx, "hello", 1)
+	if s = h.service(t, "hello"); s.Stopped != 0 || s.Health != store.Degraded || !strings.HasPrefix(s.HealthReason, "start failed") || r1.State != store.Live {
+		t.Fatalf("%+v %+v", s, r1)
+	}
+	h.rt.unhealthy[1] = false
+	if err = h.reconcile(ctx, "hello"); err != nil {
+		t.Fatal(err)
+	}
+	if s = h.service(t, "hello"); s.Health != store.Healthy || h.edges.ports["hello"] != port {
+		t.Fatalf("did not recover after a failed start: %+v", s)
+	}
+
+	// Deployers may stop and start only services their grant covers, and a
+	// stopped service can be deleted.
+	o, err = h.Deploy(agent("node:a"), stack("preview-x", "docker.io/traefik/whoami:1", "ttl: 1h\n"), "")
+	h.run(t, o, err)
+	if _, err = h.Stop(agent("node:a"), "hello", ""); !errors.Is(err, authz.ErrForbidden) {
+		t.Fatal(err)
+	}
+	o, err = h.Stop(agent("node:b"), "preview-x", "")
+	h.run(t, o, err)
+	o, err = h.Delete(admin(), "preview-x", "")
+	if o = h.run(t, o, err); o.State != store.Succeeded {
+		t.Fatalf("%+v", o)
+	}
+}
+
+func TestExtendRestartsTheTTL(t *testing.T) {
+	h := setup(t)
+	o, err := h.Deploy(agent("node:a"), stack("preview-x", "docker.io/traefik/whoami:1", "ttl: 2h\n"), "")
+	h.run(t, o, err)
+	h.deploy(t, stack("hello", "docker.io/traefik/whoami:1", ""), "")
+
+	v, err := h.Extend(agent("node:b"), "preview-x")
+	if want := time.Now().Add(2 * time.Hour).Unix(); err != nil || v.Expires < want-1 || v.Expires > want+1 {
+		t.Fatalf("%+v %v", v, err)
+	}
+	if got := h.kinds(t, "preview-x"); !strings.HasSuffix(got, "extended") {
+		t.Fatal(got)
+	}
+	if _, err = h.Extend(admin(), "hello"); !IsInvalid(err) {
+		t.Fatal("extended a persistent service", err)
+	}
+	if _, err = h.Extend(agent("node:a"), "hello"); !errors.Is(err, authz.ErrForbidden) {
+		t.Fatal(err)
+	}
+}
+
+func TestGetIncludesAnOlderLiveRevision(t *testing.T) {
+	h := setup(t)
+	h.deploy(t, stack("hello", "docker.io/traefik/whoami:1", ""), "")
+	for range 11 {
+		if o := h.deploy(t, stack("hello", "docker.io/library/missing:1", ""), ""); o.State != store.OpFailed {
+			t.Fatalf("%+v", o)
+		}
+	}
+	d, err := h.Get(admin(), "hello")
+	if err != nil || len(d.Revisions) != 11 || d.Revisions[0].Rev != 12 || d.Revisions[10].Rev != 1 {
+		t.Fatalf("%d revisions, %v", len(d.Revisions), err)
 	}
 }

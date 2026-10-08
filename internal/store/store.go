@@ -26,10 +26,12 @@ var (
 	schemaV1 string
 	//go:embed v2_health.sql
 	healthV2 string
+	//go:embed v3_lifecycle.sql
+	lifecycleV3 string
 )
 
 // migrations are forward-only; entry i upgrades user_version i to i+1.
-var migrations = []string{schemaV1, healthV2}
+var migrations = []string{schemaV1, healthV2, lifecycleV3}
 
 var ErrNotFound = errors.New("not found")
 
@@ -82,7 +84,13 @@ const (
 	Deploy   OpKind = "deploy"
 	Rollback OpKind = "rollback"
 	Delete   OpKind = "delete"
+	Restart  OpKind = "restart"
+	Stop     OpKind = "stop"
+	Start    OpKind = "start"
 )
+
+// Creates reports whether operations of this kind create a revision.
+func (k OpKind) Creates() bool { return k == Deploy || k == Rollback || k == Restart }
 
 type OpState string
 
@@ -106,6 +114,8 @@ type Service struct {
 	HealthReason string `json:"health_reason,omitempty"`
 	Restarts     int    `json:"restarts,omitempty"`
 	RestartedAt  int64  `json:"restarted_at,omitempty"`
+	// Stopped is when the service was stopped; its live revision doesn't run.
+	Stopped int64 `json:"stopped_at,omitempty"`
 }
 
 type Revision struct {
@@ -232,11 +242,11 @@ func notFound(err error) error {
 
 // ---- services ----
 
-const serviceCols = "name,kind,node_dns,current_rev,COALESCE(expires_at,0),created_by,created_at,COALESCE(deleted_at,0),health,health_reason,restarts,COALESCE(restarted_at,0)"
+const serviceCols = "name,kind,node_dns,current_rev,COALESCE(expires_at,0),created_by,created_at,COALESCE(deleted_at,0),health,health_reason,restarts,COALESCE(restarted_at,0),COALESCE(stopped_at,0)"
 
 func scanService(row scanner) (Service, error) {
 	var v Service
-	err := row.Scan(&v.Name, &v.Kind, &v.DNS, &v.Current, &v.Expires, &v.CreatedBy, &v.Created, &v.Deleted, &v.Health, &v.HealthReason, &v.Restarts, &v.RestartedAt)
+	err := row.Scan(&v.Name, &v.Kind, &v.DNS, &v.Current, &v.Expires, &v.CreatedBy, &v.Created, &v.Deleted, &v.Health, &v.HealthReason, &v.Restarts, &v.RestartedAt, &v.Stopped)
 	return v, notFound(err)
 }
 
@@ -401,11 +411,11 @@ func (s *Store) ReleasePort(ctx context.Context, r Revision) error {
 
 // ---- health ----
 
-// setLive updates the service row only while r is its live revision, and
-// records the event only if it did.
+// setLive updates the service row only while r is its live revision and
+// the service isn't stopped, and records the event only if it did.
 func (s *Store) setLive(ctx context.Context, r Revision, kind, message, set string, args ...any) error {
 	return s.write(ctx, func(tx *sql.Tx) error {
-		res, err := tx.Exec("UPDATE services SET "+set+" WHERE name=? AND current_rev=? AND deleted_at IS NULL", append(args, r.Service, r.Rev)...)
+		res, err := tx.Exec("UPDATE services SET "+set+" WHERE name=? AND current_rev=? AND deleted_at IS NULL AND stopped_at IS NULL", append(args, r.Service, r.Rev)...)
 		if err != nil {
 			return err
 		}
@@ -532,12 +542,15 @@ func (s *Store) Record(ctx context.Context, q Request) (Operation, error) {
 			q.Stack.Name, KindOf(q.Stack), expiry(q.Stack), q.Actor, now()); err != nil {
 			return err
 		}
-		var deleted int64
-		if err := tx.QueryRow("SELECT COALESCE(deleted_at,0) FROM services WHERE name=?", q.Stack.Name).Scan(&deleted); err != nil {
+		var deleted, stopped int64
+		if err := tx.QueryRow("SELECT COALESCE(deleted_at,0),COALESCE(stopped_at,0) FROM services WHERE name=?", q.Stack.Name).Scan(&deleted, &stopped); err != nil {
 			return err
 		}
 		if deleted != 0 {
 			return &Conflict{Message: "service is being deleted"}
+		}
+		if stopped != 0 {
+			return &Conflict{Message: "service is stopped; start it first"}
 		}
 		var rev int
 		if err := tx.QueryRow("SELECT COALESCE(MAX(rev),0)+1 FROM revisions WHERE service=?", q.Stack.Name).Scan(&rev); err != nil {
@@ -594,12 +607,15 @@ func freePort(tx *sql.Tx, low, high int) (int, error) {
 	return 0, errors.New("host port range exhausted")
 }
 
-// Complete finishes an operation. A non-empty reason fails it and its revision.
+// Complete finishes an operation. A non-empty reason fails it, and the
+// revision it created.
 func (s *Store) Complete(ctx context.Context, o Operation, reason string) error {
 	return s.write(ctx, func(tx *sql.Tx) error {
 		state := Succeeded
 		if reason != "" {
 			state = OpFailed
+		}
+		if reason != "" && o.Kind.Creates() {
 			if _, err := tx.Exec("UPDATE revisions SET state='failed',reason=?,finished_at=? WHERE service=? AND rev=?", reason, now(), o.Service, o.Rev); err != nil {
 				return err
 			}
@@ -697,6 +713,90 @@ func (s *Store) FinishDelete(ctx context.Context, name string) error {
 			return err
 		}
 		return event(tx, name, 0, "reconciler", "deleted", "pods, volumes and node removed")
+	})
+}
+
+// ---- stop, start and extend ----
+
+// StopService marks a service stopped and records the stop operation. The
+// reconciler stops its live revision.
+func (s *Store) StopService(ctx context.Context, name, actor, key, requestHash string) (Operation, error) {
+	return s.setStopped(ctx, Stop, name, actor, key, requestHash)
+}
+
+// StartService marks a stopped service started and records the start
+// operation. The reconciler starts its live revision again.
+func (s *Store) StartService(ctx context.Context, name, actor, key, requestHash string) (Operation, error) {
+	return s.setStopped(ctx, Start, name, actor, key, requestHash)
+}
+
+func (s *Store) setStopped(ctx context.Context, kind OpKind, name, actor, key, requestHash string) (Operation, error) {
+	var out Operation
+	err := s.write(ctx, func(tx *sql.Tx) error {
+		if o, ok, err := replay(tx, key, requestHash); ok || err != nil {
+			out = o
+			return err
+		}
+		var current int
+		var deleted, stopped int64
+		if err := tx.QueryRow("SELECT current_rev,COALESCE(deleted_at,0),COALESCE(stopped_at,0) FROM services WHERE name=?", name).Scan(&current, &deleted, &stopped); err != nil {
+			return notFound(err)
+		}
+		switch {
+		case deleted != 0:
+			return &Conflict{Message: "service is being deleted"}
+		case current == 0:
+			return &Conflict{Message: "service has no live revision"}
+		case kind == Stop && stopped != 0:
+			return &Conflict{Message: "service is already stopped"}
+		case kind == Start && stopped == 0:
+			return &Conflict{Message: "service is not stopped"}
+		}
+		if err := busy(tx, name); err != nil {
+			return err
+		}
+		update, args := "UPDATE services SET stopped_at=NULL WHERE name=?", []any{name}
+		message := fmt.Sprintf("start recorded; r%d will start", current)
+		if kind == Stop {
+			// A stopped revision has no health, and any run of restarts ends.
+			update, args = "UPDATE services SET stopped_at=?,health='',health_reason='',restarts=0,restarted_at=NULL WHERE name=?", []any{now(), name}
+			message = fmt.Sprintf("stop recorded; r%d will stop", current)
+		}
+		if _, err := tx.Exec(update, args...); err != nil {
+			return err
+		}
+		out = Operation{ID: uuid.NewString(), Kind: kind, Service: name, Rev: current, State: Running, Key: key, RequestHash: requestHash, CreatedBy: actor, Created: now()}
+		if _, err := tx.Exec("INSERT INTO operations(id,kind,service,rev,state,idempotency_key,request_hash,created_by,created_at) VALUES(?,?,?,?,'running',?,?,?,?)",
+			out.ID, kind, name, current, nullable(key), requestHash, actor, out.Created); err != nil {
+			return err
+		}
+		return event(tx, name, current, actor, string(kind), message)
+	})
+	return out, err
+}
+
+// Started records that a started service's live revision r is healthy.
+func (s *Store) Started(ctx context.Context, r Revision) error {
+	return s.setLive(ctx, r, "", "", "health='healthy',health_reason=''")
+}
+
+// Extend restarts the TTL of an ephemeral service whose live revision is
+// live, from now, as an unchanged deploy does. An expired service stays
+// expired.
+func (s *Store) Extend(ctx context.Context, live Revision, actor string) error {
+	if live.Spec.TTL == nil {
+		return errors.New("only ephemeral services expire")
+	}
+	return s.write(ctx, func(tx *sql.Tx) error {
+		res, err := tx.Exec("UPDATE services SET expires_at=? WHERE name=? AND current_rev=? AND kind='ephemeral' AND deleted_at IS NULL AND expires_at>?",
+			expiry(live.Spec), live.Service, live.Rev, now())
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			return &Conflict{Message: "service expired or changed; get it again"}
+		}
+		return event(tx, live.Service, live.Rev, actor, "extended", "ttl restarted; expires in "+*live.Spec.TTL)
 	})
 }
 
