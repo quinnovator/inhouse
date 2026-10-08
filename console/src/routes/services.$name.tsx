@@ -1,13 +1,14 @@
+import { useQueryClient } from '@tanstack/react-query'
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { type ReactNode, useState } from 'react'
-import { DeleteDialog, RollbackDialog } from '~/components/dialogs'
+import { ActionDialog, DeleteDialog, RollbackDialog } from '~/components/dialogs'
 import { LogView } from '~/components/LogView'
 import { useAccess } from '~/components/shell'
-import { EventFeed, Pill, ProblemAlert, Spinner, Time } from '~/components/ui'
-import { ApiError } from '~/lib/api'
+import { EventFeed, Menu, Pill, ProblemAlert, Spinner, Time } from '~/components/ui'
+import { ApiError, api, type ServiceAction } from '~/lib/api'
 import { actor, ago, exact, health, image, plural, revTone, safeURL, until } from '~/lib/format'
 import { useService } from '~/lib/queries'
-import { deployable, eligible, order, shown } from '~/lib/spec'
+import { deployable, eligible, hasSecrets, order, shown } from '~/lib/spec'
 import { toast, useNow } from '~/lib/stores'
 import type { Container, Revision, ServiceDetail, Stack } from '~/lib/types'
 
@@ -16,7 +17,7 @@ export const Route = createFileRoute('/services/$name')({
   component: ServicePage,
 })
 
-type Dialog = { kind: 'rollback'; rev?: number } | { kind: 'delete' }
+type Dialog = { kind: 'rollback'; rev?: number } | { kind: 'delete' } | { kind: 'action'; action: ServiceAction }
 
 function ServicePage() {
   const { name } = Route.useParams()
@@ -47,6 +48,7 @@ function ServicePage() {
       )}
       {detail && dialog?.kind === 'rollback' && <RollbackDialog detail={detail} preselect={dialog.rev} onClose={() => setDialog(null)} />}
       {detail && dialog?.kind === 'delete' && <DeleteDialog detail={detail} onClose={() => setDialog(null)} />}
+      {detail && dialog?.kind === 'action' && <ActionDialog detail={detail} action={dialog.action} onClose={() => setDialog(null)} />}
     </>
   )
 }
@@ -59,9 +61,28 @@ function Loaded({ detail, open }: { detail: ServiceDetail; open: (d: Dialog) => 
   const spec = live?.spec
   const state = health(svc, now)
   const url = safeURL(svc.url)
-  const mayDeploy = !svc.deleted_at && can.canDeploy(svc.name)
+  const mayOperate = !svc.deleted_at && can.canDeploy(svc.name)
+  // A stopped service only starts; deploys of any kind are refused.
+  const mayDeploy = mayOperate && !svc.stopped_at
   const rollbackable = mayDeploy && revs.some((r) => eligible(svc, r))
   const working = revs.find((r) => r.state === 'pending' || r.state === 'starting')
+  const hasLive = !!svc.current_rev
+  const mayDelete = !svc.deleted_at && can.canDelete(svc)
+  const client = useQueryClient()
+  const [extending, setExtending] = useState(false)
+
+  async function extend() {
+    setExtending(true)
+    try {
+      await api.extend(svc.name)
+      toast(live?.spec.ttl ? `${svc.name} now expires in ${live.spec.ttl}` : `${svc.name} extended`)
+      void client.invalidateQueries({ queryKey: ['service', svc.name] })
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Could not extend', 'bad')
+    } finally {
+      setExtending(false)
+    }
+  }
 
   async function copySpec(s: Stack) {
     try {
@@ -90,9 +111,14 @@ function Loaded({ detail, open }: { detail: ServiceDetail; open: (d: Dialog) => 
           )}
         </div>
         <div className="svc-actions">
-          {spec && (
-            <button className="btn" type="button" onClick={() => copySpec(spec)}>
-              Copy spec
+          {mayOperate && hasLive && svc.stopped_at ? (
+            <button className="btn primary" type="button" onClick={() => open({ kind: 'action', action: 'start' })}>
+              Start…
+            </button>
+          ) : null}
+          {mayDeploy && hasLive && (
+            <button className="btn" type="button" onClick={() => open({ kind: 'action', action: 'restart' })}>
+              Restart…
             </button>
           )}
           {spec && mayDeploy && (
@@ -105,10 +131,35 @@ function Loaded({ detail, open }: { detail: ServiceDetail; open: (d: Dialog) => 
               Roll back…
             </button>
           )}
-          {!svc.deleted_at && can.canDelete(svc) && (
-            <button className="btn danger" type="button" onClick={() => open({ kind: 'delete' })}>
-              Delete…
-            </button>
+          {(spec || mayDelete) && (
+            <Menu label="More">
+              {spec && (
+                <button className="menu-item" type="button" onClick={() => copySpec(spec)}>
+                  Copy spec
+                  <span className="sub">A document that deploys exactly this revision</span>
+                </button>
+              )}
+              {mayDeploy && hasLive && hasSecrets(live?.spec) && (
+                <button className="menu-item" type="button" onClick={() => open({ kind: 'action', action: 'redeploy' })}>
+                  Redeploy with current secrets…
+                  <span className="sub">Picks up secrets changed since r{svc.current_rev}</span>
+                </button>
+              )}
+              {mayDeploy && hasLive && (
+                <button className="menu-item" type="button" onClick={() => open({ kind: 'action', action: 'stop' })}>
+                  Stop…
+                  <span className="sub">Take it offline and keep everything</span>
+                </button>
+              )}
+              {mayDelete && (
+                <>
+                  {spec && <hr />}
+                  <button className="menu-item danger" type="button" onClick={() => open({ kind: 'delete' })}>
+                    Delete…
+                  </button>
+                </>
+              )}
+            </Menu>
           )}
         </div>
       </div>
@@ -120,6 +171,14 @@ function Loaded({ detail, open }: { detail: ServiceDetail; open: (d: Dialog) => 
             <strong>Being deleted since {ago(svc.deleted_at, now)}</strong>
           </div>
           <span className="hint">Pods, volumes and the tailnet node are being removed.</span>
+        </div>
+      ) : svc.stopped_at ? (
+        <div className="alert" role="status">
+          <strong>Stopped {ago(svc.stopped_at, now)}</strong>
+          <span className="hint">
+            r{svc.current_rev} isn't running and its address answers 503. Revisions, volumes and the tailnet node are kept.
+            {mayOperate ? ' Start it to serve again; deploys are refused until then.' : ''}
+          </span>
         </div>
       ) : working ? (
         <div className="alert busy" role="status">
@@ -156,7 +215,7 @@ function Loaded({ detail, open }: { detail: ServiceDetail; open: (d: Dialog) => 
           <section className="card" aria-labelledby="rev-h">
             <div className="card-head">
               <h2 id="rev-h">Revisions</h2>
-              <span className="sub">The 10 newest. A rollback is a new revision that runs exactly what an old one ran.</span>
+              <span className="sub">The 10 newest, and the live one. A rollback is a new revision that runs exactly what an old one ran.</span>
             </div>
             <div className="card-body flush">
               {revs.length ? (
@@ -238,7 +297,16 @@ function Loaded({ detail, open }: { detail: ServiceDetail; open: (d: Dialog) => 
                 {svc.kind === 'ephemeral' && svc.expires_at ? (
                   <>
                     <dt>Expires</dt>
-                    <dd title={exact(svc.expires_at)}>{until(svc.expires_at, now)}</dd>
+                    <dd>
+                      <div className="row">
+                        <span title={exact(svc.expires_at)}>{until(svc.expires_at, now)}</span>
+                        {mayOperate && hasLive && (
+                          <button className="btn small" type="button" disabled={extending} onClick={extend}>
+                            Extend to {live?.spec.ttl ?? 'full TTL'}
+                          </button>
+                        )}
+                      </div>
+                    </dd>
                   </>
                 ) : null}
                 <dt>Created</dt>

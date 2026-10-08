@@ -72,7 +72,7 @@ func (e *Engine) probeAll(ctx context.Context) {
 		return
 	}
 	for _, s := range services {
-		if s.Current == 0 || s.Deleted != 0 || !e.claim(s.Name, false) {
+		if s.Current == 0 || s.Deleted != 0 || s.Stopped != 0 || !e.claim(s.Name, false) {
 			continue
 		}
 		e.wg.Add(1)
@@ -156,6 +156,18 @@ func (e *Engine) reconcile(ctx context.Context, name string) error {
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return err
 	}
+	switch {
+	case svc.Stopped != 0:
+		if err = e.halt(ctx, svc, op, hasOp); err != nil {
+			return err
+		}
+		return e.cleanup(ctx, name)
+	case hasOp && op.Kind == store.Start:
+		if err = e.resume(ctx, svc, op); err != nil {
+			return err
+		}
+		return e.cleanup(ctx, name)
+	}
 	// A recreate update stops the live revision on purpose; don't restart it.
 	replacing := hasOp && e.replacing(ctx, op)
 	if svc.Current > 0 && !replacing {
@@ -182,18 +194,18 @@ func (e *Engine) replacing(ctx context.Context, o store.Operation) bool {
 }
 
 // probe checks a service's live revision once, unless the service is being
-// deleted, has expired, or a recreate update stopped the live revision on
-// purpose: the next pass handles those.
+// deleted, has expired, is stopped or being started, or a recreate update
+// stopped the live revision on purpose: the next pass handles those.
 func (e *Engine) probe(ctx context.Context, name string) (rev int, err error) {
 	svc, err := e.store.Service(ctx, name)
 	if errors.Is(err, store.ErrNotFound) {
 		return 0, nil
 	}
-	if err != nil || svc.Current == 0 || svc.Deleted != 0 || (svc.Expires > 0 && svc.Expires <= time.Now().Unix()) {
+	if err != nil || svc.Current == 0 || svc.Deleted != 0 || svc.Stopped != 0 || (svc.Expires > 0 && svc.Expires <= time.Now().Unix()) {
 		return 0, err
 	}
 	op, err := e.store.RunningOperation(ctx, name)
-	if err == nil && e.replacing(ctx, op) {
+	if err == nil && (op.Kind == store.Start || e.replacing(ctx, op)) {
 		return 0, nil
 	}
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
@@ -364,6 +376,59 @@ func (e *Engine) revive(ctx context.Context, r store.Revision) error {
 		return err
 	}
 	return e.serve(ctx, r)
+}
+
+// halt keeps a stopped service's live revision stopped and completes the
+// stop operation once it is. The node stays up and answers 503, so the
+// address still says the service exists.
+func (e *Engine) halt(ctx context.Context, svc store.Service, op store.Operation, hasOp bool) error {
+	e.edges.Clear(svc.Name)
+	e.mu.Lock()
+	delete(e.failures, svc.Name)
+	e.mu.Unlock()
+	live, err := e.store.Revision(ctx, svc.Name, svc.Current)
+	if err != nil {
+		return err
+	}
+	// Stop even when Running says no: that means not every container runs,
+	// and the others may still be.
+	if err = e.runtime.Stop(ctx, live); err != nil {
+		return err
+	}
+	if hasOp && op.Kind == store.Stop {
+		if err = e.store.Complete(ctx, op, ""); err != nil {
+			return err
+		}
+	}
+	if _, err = e.edges.Ensure(ctx, svc.Name, svc.Kind, live.Spec.Expose); err != nil {
+		return fmt.Errorf("stopped; its address does not answer: %w", err)
+	}
+	e.edges.Clear(svc.Name)
+	return nil
+}
+
+// resume starts a stopped service's live revision again, as after a
+// reboot. If it doesn't come up healthy the start fails and the service is
+// degraded, so it is restarted with backoff like any live revision that
+// went down.
+func (e *Engine) resume(ctx context.Context, svc store.Service, op store.Operation) error {
+	live, err := e.store.Revision(ctx, svc.Name, svc.Current)
+	if err != nil {
+		return err
+	}
+	if err = e.revive(ctx, live); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if err := e.store.Degrade(ctx, live, "start failed: "+err.Error()); err != nil {
+			return err
+		}
+		return e.store.Complete(ctx, op, err.Error())
+	}
+	if err = e.store.Started(ctx, live); err != nil {
+		return err
+	}
+	return e.store.Complete(ctx, op, "")
 }
 
 // serve points the service's edge at r.

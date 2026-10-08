@@ -36,9 +36,10 @@ deploy hello: operation 3f6c… (idempotency key 9b1e…)
 - **Safe deploys.** Images are pinned to digests, new revisions take traffic
   only after passing health checks, and cutover is an atomic swap with no
   dropped requests. A failed deploy leaves the live revision untouched.
-  Rollbacks run exactly the bytes they ran before.
+  Rollbacks run exactly the bytes they ran before. Restart, stop, start or
+  redeploy with rotated secrets from the CLI, the console or MCP.
 - **Agents as first-class operators.** Plan, deploy, wait, read logs, roll
-  back and delete through MCP. Give an agent a tagged identity that may only
+  back, restart and delete through MCP. Give an agent a tagged identity that may only
   create `preview-*` services that expire within a day, and every call it
   makes is attributed to it.
 - **Ephemeral services.** Add `ttl: 6h` and the service, its data and its

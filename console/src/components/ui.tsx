@@ -2,7 +2,7 @@
 // status and event lists.
 
 import { Link } from '@tanstack/react-router'
-import { type ReactNode, useEffect, useLayoutEffect, useRef } from 'react'
+import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ApiError } from '~/lib/api'
 import { actor, ago, brief, clock, eventTone, exact, type Tone } from '~/lib/format'
 import { type Feed, useEventFeed } from '~/lib/queries'
@@ -51,6 +51,41 @@ export function Segmented<T extends string>(props: {
   )
 }
 
+// Menu is a disclosure of actions. It closes on a choice, on Escape and on
+// a click elsewhere, and opens rightward when there's no room to its left.
+export function Menu({ label, children }: { label: string; children: ReactNode }) {
+  const ref = useRef<HTMLDetailsElement>(null)
+  const [start, setStart] = useState(false)
+  useEffect(() => {
+    const close = (e: MouseEvent | KeyboardEvent) => {
+      const d = ref.current
+      if (!d?.open) return
+      if (e instanceof KeyboardEvent ? e.key === 'Escape' : !d.contains(e.target as Node)) {
+        d.open = false
+        if (e instanceof KeyboardEvent) d.querySelector('summary')?.focus()
+      }
+    }
+    document.addEventListener('click', close)
+    document.addEventListener('keydown', close)
+    return () => {
+      document.removeEventListener('click', close)
+      document.removeEventListener('keydown', close)
+    }
+  }, [])
+  return (
+    <details
+      className={start ? 'menu start' : 'menu'}
+      ref={ref}
+      onToggle={(e) => e.currentTarget.open && setStart(e.currentTarget.getBoundingClientRect().right < 272)}
+    >
+      <summary className="btn">{label}</summary>
+      <div className="menu-panel" onClick={() => ref.current && (ref.current.open = false)}>
+        {children}
+      </div>
+    </details>
+  )
+}
+
 export function Spinner() {
   return <span className="spinner" aria-hidden="true" />
 }
@@ -85,6 +120,9 @@ const running: Record<Operation['kind'], string> = {
   deploy: 'Pinning images, starting the new revision and waiting for its health checks. The live revision keeps serving until then.',
   rollback: 'Starting a copy of the target revision and waiting for its health checks. The live revision keeps serving until then.',
   delete: 'Stopping pods and removing the tailnet node and volumes.',
+  restart: 'Starting a copy of the live revision and waiting for its health checks.',
+  stop: 'Stopping the live revision.',
+  start: 'Starting the live revision and waiting for its health checks.',
 }
 
 export function OperationStatus({ op }: { op: Operation }) {
