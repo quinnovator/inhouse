@@ -390,11 +390,9 @@ func (e *Engine) halt(ctx context.Context, svc store.Service, op store.Operation
 	if err != nil {
 		return err
 	}
-	running, err := e.runtime.Running(ctx, live)
-	if err == nil && running {
-		err = e.runtime.Stop(ctx, live)
-	}
-	if err != nil {
+	// Stop even when Running says no: that means not every container runs,
+	// and the others may still be.
+	if err = e.runtime.Stop(ctx, live); err != nil {
 		return err
 	}
 	if hasOp && op.Kind == store.Stop {

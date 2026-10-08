@@ -22,6 +22,7 @@ type fakeRuntime struct {
 	starts    map[string]int
 	stops     map[string]int
 	unhealthy map[int]bool // revisions whose checks fail
+	partial   bool         // Running reports false: some container is down
 	logs      string
 	upHook    func(store.Revision)
 	strays    []store.Revision // labelled pods with no revision row
@@ -56,7 +57,7 @@ func (f *fakeRuntime) Up(_ context.Context, r store.Revision) error {
 func (f *fakeRuntime) Running(_ context.Context, r store.Revision) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.running[key(r)], nil
+	return f.running[key(r)] && !f.partial, nil
 }
 func (f *fakeRuntime) Check(_ context.Context, r store.Revision, _ string) error {
 	f.mu.Lock()
@@ -907,9 +908,16 @@ func TestStopAndStart(t *testing.T) {
 	if err = h.reconcile(ctx, "hello"); err != nil {
 		t.Fatal(err)
 	}
-	if h.rt.running["hello/1"] || h.rt.starts["hello/1"] != 1 || h.rt.stops["hello/1"] != 1 {
-		t.Fatal("a stopped revision was started or stopped again")
+	if h.rt.running["hello/1"] || h.rt.starts["hello/1"] != 1 {
+		t.Fatal("a stopped revision was started")
 	}
+	// A pod with one container down still has its others stopped.
+	h.rt.running["hello/1"] = true
+	h.rt.partial = true
+	if err = h.reconcile(ctx, "hello"); err != nil || h.rt.running["hello/1"] {
+		t.Fatal("a partly running stopped revision was left running", err)
+	}
+	h.rt.partial = false
 	var conflict *store.Conflict
 	for name, call := range map[string]func() error{
 		"stop": func() error { _, err := h.Stop(admin(), "hello", ""); return err },
@@ -997,5 +1005,19 @@ func TestExtendRestartsTheTTL(t *testing.T) {
 	}
 	if _, err = h.Extend(agent("node:a"), "hello"); !errors.Is(err, authz.ErrForbidden) {
 		t.Fatal(err)
+	}
+}
+
+func TestGetIncludesAnOlderLiveRevision(t *testing.T) {
+	h := setup(t)
+	h.deploy(t, stack("hello", "docker.io/traefik/whoami:1", ""), "")
+	for range 11 {
+		if o := h.deploy(t, stack("hello", "docker.io/library/missing:1", ""), ""); o.State != store.OpFailed {
+			t.Fatalf("%+v", o)
+		}
+	}
+	d, err := h.Get(admin(), "hello")
+	if err != nil || len(d.Revisions) != 11 || d.Revisions[0].Rev != 12 || d.Revisions[10].Rev != 1 {
+		t.Fatalf("%d revisions, %v", len(d.Revisions), err)
 	}
 }

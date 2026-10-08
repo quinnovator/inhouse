@@ -30,7 +30,7 @@ function Services() {
         plural(all.length, 'service'),
         count('ok') && `${count('ok')} healthy`,
         count('warn') && `${count('warn')} degraded`,
-        count('none') && `${count('none')} not serving`,
+        count('none') + count('busy') && `${count('none') + count('busy')} not serving`,
       ]
         .filter(Boolean)
         .join(' · ')
