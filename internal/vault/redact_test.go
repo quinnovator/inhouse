@@ -75,8 +75,16 @@ func TestRedactMatchesNaive(t *testing.T) {
 			values[j] = word(2 + r.IntN(5))
 		}
 		text := word(r.IntN(40))
-		if got, want := matcherFor(values...).redact(text), naiveRedact(values, text); got != want {
-			t.Fatalf("case %d: %q over %q = %q, want %q", i, values, text, got, want)
+		want := naiveRedact(values, text)
+		if got := matcherFor(values...).redact(text); got != want {
+			t.Fatalf("case %d: matcher: %q over %q = %q, want %q", i, values, text, got, want)
+		}
+		covered := make([]bool, len(text))
+		for _, v := range values {
+			cover(covered, text, []byte(v))
+		}
+		if got := redactCovered(text, covered); got != want {
+			t.Fatalf("case %d: cover: %q over %q = %q, want %q", i, values, text, got, want)
 		}
 	}
 }

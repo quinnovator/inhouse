@@ -107,7 +107,20 @@ func TestRegistryCredentials(t *testing.T) {
 	}
 }
 
-func TestRedactNestedSecretsLeaveNothing(t *testing.T) {
+// bothPaths runs a test with the cached matcher and again past its budget.
+func bothPaths(t *testing.T, f func(t *testing.T)) {
+	t.Run("matcher", f)
+	t.Run("each", func(t *testing.T) {
+		old := matcherBudget
+		matcherBudget = 0
+		t.Cleanup(func() { matcherBudget = old })
+		f(t)
+	})
+}
+
+func TestRedactNestedSecretsLeaveNothing(t *testing.T) { bothPaths(t, testRedactNested) }
+
+func testRedactNested(t *testing.T) {
 	v, _, _ := open(t)
 	ctx := context.Background()
 	// Several pairs, so no storage order happens to redact them all.
@@ -124,7 +137,9 @@ func TestRedactNestedSecretsLeaveNothing(t *testing.T) {
 	}
 }
 
-func TestRedactSeesNewAndChangedSecrets(t *testing.T) {
+func TestRedactSeesNewAndChangedSecrets(t *testing.T) { bothPaths(t, testRedactChanges) }
+
+func testRedactChanges(t *testing.T) {
 	v, _, _ := open(t)
 	ctx := context.Background()
 	_ = v.Set(ctx, "a", "first", "me")
@@ -139,5 +154,24 @@ func TestRedactSeesNewAndChangedSecrets(t *testing.T) {
 	_ = v.Set(ctx, "a", "again", "me")
 	if out := v.Redact(ctx, "first again"); out != "first [REDACTED]" {
 		t.Fatal(out)
+	}
+}
+
+func TestRedactPastBudgetKeepsNoMatcher(t *testing.T) {
+	v, _, _ := open(t)
+	ctx := context.Background()
+	_ = v.Set(ctx, "a", "first", "me")
+	_ = v.Redact(ctx, "warm the cache")
+	if v.redactor == nil {
+		t.Fatal("no matcher under budget")
+	}
+	old := matcherBudget
+	matcherBudget = 0
+	t.Cleanup(func() { matcherBudget = old })
+	if out := v.Redact(ctx, "first"); out != "[REDACTED]" {
+		t.Fatal(out)
+	}
+	if v.redactor != nil || v.plain != nil {
+		t.Fatal("kept values past budget")
 	}
 }
