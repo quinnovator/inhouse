@@ -28,6 +28,20 @@ deploy hello: operation 3f6c… (idempotency key 9b1e…)
 }
 ```
 
+The web console at `https://deploy.<tailnet>.ts.net` shows every service,
+its health and who deployed it, with live logs, revisions and the event
+timeline one click away:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/console-services-dark.png">
+  <img alt="The console's services page: six services with their health, live revision, kind and creator, beside a feed of recent events" src="docs/images/console-services-light.png">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/console-service-dark.png">
+  <img alt="A service page: live logs with a secret redacted, health, revisions and the service's events, with restart, edit and deploy, and roll back actions" src="docs/images/console-service-light.png">
+</picture>
+
 ## What you get
 
 - **One node per service.** Every service is its own tailnet device with its
