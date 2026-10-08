@@ -2,6 +2,7 @@ package vault
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -103,5 +104,40 @@ func TestRegistryCredentials(t *testing.T) {
 		if ValidName(bad) {
 			t.Errorf("accepted %q", bad)
 		}
+	}
+}
+
+func TestRedactNestedSecretsLeaveNothing(t *testing.T) {
+	v, _, _ := open(t)
+	ctx := context.Background()
+	// Several pairs, so no storage order happens to redact them all.
+	var in, want []string
+	for i := range 8 {
+		short := fmt.Sprintf("key%d", i)
+		_ = v.Set(ctx, fmt.Sprintf("short%d", i), short, "me")
+		_ = v.Set(ctx, fmt.Sprintf("long%d", i), short+"-tail", "me")
+		in = append(in, short+"-tail")
+		want = append(want, "[REDACTED]")
+	}
+	if out := v.Redact(ctx, strings.Join(in, " ")); out != strings.Join(want, " ") {
+		t.Fatal(out)
+	}
+}
+
+func TestRedactSeesNewAndChangedSecrets(t *testing.T) {
+	v, _, _ := open(t)
+	ctx := context.Background()
+	_ = v.Set(ctx, "a", "first", "me")
+	if out := v.Redact(ctx, "first later"); out != "[REDACTED] later" {
+		t.Fatal(out)
+	}
+	_ = v.Set(ctx, "b", "later", "me")
+	if out := v.Redact(ctx, "first later"); out != "[REDACTED] [REDACTED]" {
+		t.Fatal(out)
+	}
+	// Replacing an unpinned value drops the old one from the set.
+	_ = v.Set(ctx, "a", "again", "me")
+	if out := v.Redact(ctx, "first again"); out != "first [REDACTED]" {
+		t.Fatal(out)
 	}
 }

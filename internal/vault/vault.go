@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"filippo.io/age"
 	"github.com/quinnovator/inhouse/internal/spec"
@@ -33,6 +34,12 @@ const RegistryPrefix = "registry-auth/"
 type Vault struct {
 	store    *store.Store
 	identity *age.X25519Identity
+
+	mu sync.Mutex
+	// redactor matches every value in plain, which holds the decrypted
+	// values Redact last saw, keyed by ciphertext hash.
+	redactor *matcher
+	plain    map[[32]byte][]byte
 }
 
 // Open loads the age identity at keyFile, generating it on first start.
@@ -60,7 +67,7 @@ func Open(db *store.Store, keyFile string) (*Vault, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &Vault{db, id}, nil
+		return &Vault{store: db, identity: id}, nil
 	}
 	if err != nil {
 		return nil, err
@@ -73,7 +80,7 @@ func Open(db *store.Store, keyFile string) (*Vault, error) {
 	if err != nil {
 		return nil, errors.New("invalid age identity file")
 	}
-	return &Vault{db, id}, nil
+	return &Vault{store: db, identity: id}, nil
 }
 
 // ValidName accepts a stack-referenceable name or registry-auth/<host>.
@@ -198,19 +205,54 @@ func (v *Vault) RegistryAuth(ctx context.Context, host string) (username, passwo
 // Redact replaces every current or pinned secret value in text. If any value
 // cannot be decrypted, it withholds the text entirely.
 func (v *Vault) Redact(ctx context.Context, text string) string {
-	all, err := v.store.AllSecretCiphertexts(ctx)
+	m, err := v.matcher(ctx)
 	if err != nil {
 		return "[logs withheld: redaction unavailable]"
 	}
-	for _, ciphertext := range all {
-		raw, err := v.decrypt(ciphertext)
-		if err != nil {
-			return "[logs withheld: redaction unavailable]"
-		}
-		text = strings.ReplaceAll(text, string(raw), "[REDACTED]")
-		if a, ok := parseRegistryAuth(raw); ok {
-			text = strings.ReplaceAll(text, a.Password, "[REDACTED]")
+	return m.redact(text)
+}
+
+// matcher returns a matcher for every current and pinned value. It reads the
+// ciphertexts on every call, so a value is redacted as soon as it is stored,
+// but decrypts and rebuilds only when they have changed.
+func (v *Vault) matcher(ctx context.Context) (*matcher, error) {
+	all, err := v.store.AllSecretCiphertexts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	hashes := make([][32]byte, len(all))
+	for i, ciphertext := range all {
+		hashes[i] = sha256.Sum256(ciphertext)
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	// The ciphertexts are distinct, so the same count and no unseen hash
+	// means the same set.
+	same := v.redactor != nil && len(hashes) == len(v.plain)
+	for _, h := range hashes {
+		if _, ok := v.plain[h]; !ok {
+			same = false
+			break
 		}
 	}
-	return text
+	if same {
+		return v.redactor, nil
+	}
+	plain := make(map[[32]byte][]byte, len(all))
+	values := make([][]byte, 0, len(all))
+	for i, ciphertext := range all {
+		raw, ok := v.plain[hashes[i]]
+		if !ok {
+			if raw, err = v.decrypt(ciphertext); err != nil {
+				return nil, err
+			}
+		}
+		plain[hashes[i]] = raw
+		values = append(values, raw)
+		if a, ok := parseRegistryAuth(raw); ok {
+			values = append(values, []byte(a.Password))
+		}
+	}
+	v.redactor, v.plain = newMatcher(values), plain
+	return v.redactor, nil
 }

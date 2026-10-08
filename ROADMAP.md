@@ -8,8 +8,6 @@ need in [Discussions](https://github.com/quinnovator/inhouse/discussions).
 
 - **Complete event history for every role.** Viewers and deployers see every
   event for their services, however busy the rest of the host is.
-- **Fast, precise log redaction**, however many secrets and secret versions
-  you keep.
 - **Large images deploy.** Image pulls get a configurable timeout.
 - **Bounded history.** Old events and operations are pruned.
 
