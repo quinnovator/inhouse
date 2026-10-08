@@ -795,6 +795,30 @@ func TestEventsAreFilteredByGrant(t *testing.T) {
 	}
 }
 
+func TestEventsReachQuietServicesOnABusyHost(t *testing.T) {
+	h := setup(t)
+	o, err := h.Deploy(agent("node:a"), stack("preview-a", "docker.io/traefik/whoami:1", "ttl: 1h\n"), "")
+	h.run(t, o, err)
+	ctx := context.Background()
+	for i := range 2000 {
+		_ = h.db.Event(ctx, "blog", i, "me", "test", "busy")
+	}
+	events, err := h.Events(agent("node:a"), store.EventQuery{Limit: 100})
+	if err != nil || len(events) == 0 {
+		t.Fatal(events, err)
+	}
+	for _, ev := range events {
+		if ev.Service != "preview-a" {
+			t.Fatalf("agent saw %+v", ev)
+		}
+	}
+	// Paging from before the first event finds the same history.
+	paged, err := h.Events(agent("node:a"), store.EventQuery{Since: 1, Limit: 100})
+	if err != nil || len(paged) < len(events)-1 {
+		t.Fatal(len(paged), len(events), err)
+	}
+}
+
 func TestPlanShowsKeysNotValues(t *testing.T) {
 	h := setup(t)
 	raw := []byte(strings.Replace(string(stack("app", "docker.io/library/app:1", "")), "port: 80\n", "port: 80\n    env: {API_KEY: very-secret-env}\n", 1))

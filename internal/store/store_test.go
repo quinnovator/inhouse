@@ -177,6 +177,38 @@ func TestEventsWindow(t *testing.T) {
 	}
 }
 
+func TestEventsForReadableServicesOnABusyHost(t *testing.T) {
+	s := open(t)
+	ctx := context.Background()
+	for i := range 3 {
+		_ = s.Event(ctx, "quiet", i, "me", "test", "event")
+	}
+	_ = s.Event(ctx, "", 0, "me", "secret", "no service")
+	for i := range 3000 {
+		_ = s.Event(ctx, "busy", i, "me", "test", "event")
+	}
+	quiet := func(name string) bool { return name == "quiet" }
+	newest, err := s.Events(ctx, EventQuery{CanRead: quiet, Limit: 5})
+	if err != nil || len(newest) != 3 || newest[0].Rev != 0 || newest[2].Rev != 2 {
+		t.Fatal(newest, err)
+	}
+	after, _ := s.Events(ctx, EventQuery{CanRead: quiet, Since: newest[0].ID, Limit: 1})
+	if len(after) != 1 || after[0].Rev != 1 {
+		t.Fatal(after)
+	}
+	all := func(string) bool { return true }
+	everything, _ := s.Events(ctx, EventQuery{CanRead: all, Limit: 100})
+	for _, ev := range everything {
+		if ev.Service == "" {
+			t.Fatal("served an event without a service")
+		}
+	}
+	none, _ := s.Events(ctx, EventQuery{CanRead: func(string) bool { return false }, Limit: 100})
+	if len(none) != 0 {
+		t.Fatal(none)
+	}
+}
+
 func TestNamespaceSlotsAreStableAndBounded(t *testing.T) {
 	s := open(t)
 	ctx := context.Background()

@@ -467,29 +467,10 @@ func (e *Engine) Events(ctx context.Context, q store.EventQuery) ([]store.Event,
 		}
 		return e.store.Events(ctx, q)
 	}
-	if p.IsAdmin() {
-		return e.store.Events(ctx, q)
+	if !p.IsAdmin() {
+		q.CanRead = p.CanRead
 	}
-	want := q.Limit
-	q.Limit = 1000
-	all, err := e.store.Events(ctx, q)
-	if err != nil {
-		return nil, err
-	}
-	out := []store.Event{}
-	for _, v := range all {
-		if v.Service != "" && p.CanRead(v.Service) {
-			out = append(out, v)
-		}
-	}
-	if len(out) > want {
-		if q.Since > 0 {
-			out = out[:want]
-		} else {
-			out = out[len(out)-want:]
-		}
-	}
-	return out, nil
+	return e.store.Events(ctx, q)
 }
 
 // Audit records a refused call, attributed to its caller.
