@@ -808,17 +808,44 @@ type EventQuery struct {
 	Service string
 	Since   int64
 	Limit   int
+	// CanRead, when set, limits the events to services it accepts and
+	// leaves out events without a service. Limit and Since apply after it.
+	CanRead func(service string) bool
 }
 
 func (s *Store) Events(ctx context.Context, q EventQuery) ([]Event, error) {
 	if q.Limit <= 0 {
 		q.Limit = 20
 	}
-	query := "SELECT id,ts,service,rev,actor,kind,message FROM events WHERE (?='' OR service=?) AND id>? ORDER BY id ASC LIMIT ?"
-	if q.Since == 0 {
-		query = "SELECT * FROM (SELECT id,ts,service,rev,actor,kind,message FROM events WHERE (?='' OR service=?) AND id>? ORDER BY id DESC LIMIT ?) ORDER BY id ASC"
+	// One transaction holds the only connection, so no event is written
+	// between listing services and reading their events.
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, query, q.Service, q.Service, q.Since, q.Limit)
+	defer func() { _ = tx.Rollback() }()
+	where := "(?='' OR service=?) AND id>?"
+	args := []any{q.Service, q.Service, q.Since}
+	if q.CanRead != nil {
+		names, err := eventServices(tx)
+		if err != nil {
+			return nil, err
+		}
+		readable := []string{}
+		for _, name := range names {
+			if q.CanRead(name) {
+				readable = append(readable, name)
+			}
+		}
+		list, _ := json.Marshal(readable)
+		where += " AND service IN (SELECT value FROM json_each(?))"
+		args = append(args, string(list))
+	}
+	query := "SELECT id,ts,service,rev,actor,kind,message FROM events WHERE " + where + " ORDER BY id ASC LIMIT ?"
+	if q.Since == 0 {
+		query = "SELECT * FROM (SELECT id,ts,service,rev,actor,kind,message FROM events WHERE " + where + " ORDER BY id DESC LIMIT ?) ORDER BY id ASC"
+	}
+	rows, err := tx.QueryContext(ctx, query, append(args, q.Limit)...)
 	if err != nil {
 		return nil, err
 	}
@@ -830,6 +857,29 @@ func (s *Store) Events(ctx context.Context, q EventQuery) ([]Event, error) {
 			return nil, err
 		}
 		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+// eventServices returns every service with events. Each step seeks the next
+// name in events_by_service, so it costs one lookup per service, not a scan.
+func eventServices(tx *sql.Tx) ([]string, error) {
+	rows, err := tx.Query(`WITH RECURSIVE names(name) AS (
+		SELECT (SELECT MIN(service) FROM events WHERE service > '')
+		UNION ALL
+		SELECT (SELECT MIN(service) FROM events WHERE service > name) FROM names WHERE name IS NOT NULL
+	) SELECT name FROM names WHERE name IS NOT NULL`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		out = append(out, name)
 	}
 	return out, rows.Err()
 }
