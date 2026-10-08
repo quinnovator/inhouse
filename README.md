@@ -11,8 +11,8 @@
 Describe a stack of containers in a short YAML file and deploy it. It comes
 up at `https://<name>.<tailnet>.ts.net` with a real certificate, reachable
 only by the people and devices your Tailscale policy allows. People use the
-`inhouse` CLI; AI agents use the built-in MCP server, with their own,
-narrower permissions.
+`inhouse` CLI or the web console; AI agents use the built-in MCP server,
+with their own, narrower permissions.
 
 There are no API tokens, no accounts and no public ports. Tailscale is the
 edge, the TLS provider, the identity system and the permission system;
@@ -150,8 +150,13 @@ Some of these are on the [roadmap](ROADMAP.md).
 go test -race ./...                 # unit tests; tsnet runs against an in-process control server
 INHOUSE_TEST_PODMAN_SOCKET=/run/user/$UID/podman/podman.sock \
   go test -run TestPodmanIntegration ./internal/podman   # against real rootless Podman
+pnpm -C console install && pnpm -C console build          # the web console, embedded by the next step
 go build ./cmd/inhoused ./cmd/inhouse
 ```
+
+Without the console build, `inhoused` still builds and serves a page saying
+the console isn't built. [console/README.md](console/README.md) covers
+working on the console itself.
 
 ## Contributing
 
