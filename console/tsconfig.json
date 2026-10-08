@@ -1,0 +1,19 @@
+{
+  "include": ["src", "scripts", "vite.config.ts", "vitest.config.ts"],
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "jsx": "react-jsx",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "target": "ES2024",
+    "lib": ["DOM", "DOM.Iterable", "ES2024"],
+    "types": ["vite/client", "node"],
+    "isolatedModules": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "paths": { "~/*": ["./src/*"] },
+    "noEmit": true
+  }
+}

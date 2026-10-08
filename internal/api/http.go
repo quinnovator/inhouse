@@ -7,9 +7,11 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/quinnovator/inhouse/internal/authz"
+	"github.com/quinnovator/inhouse/internal/console"
 	"github.com/quinnovator/inhouse/internal/engine"
 	"github.com/quinnovator/inhouse/internal/spec"
 	"github.com/quinnovator/inhouse/internal/store"
@@ -23,8 +25,10 @@ type Server struct {
 	WhoIs  WhoIs
 }
 
-// Handler serves /v1 and /mcp. Every request is identified first; callers
-// without a valid grant get 403 and are recorded as denied.
+// Handler serves the console, /v1 and /mcp. Every /v1 and /mcp request is
+// identified first; callers without a valid grant get 403 and are recorded as
+// denied. Browser requests from other origins may only read: the caller's
+// tailnet identity is ambient, so another site could otherwise act with it.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	e := s.Engine
@@ -117,7 +121,8 @@ func (s *Server) Handler() http.Handler {
 		reply(w, r, e)(map[string]any{"name": name, "deleted": true}, err)
 	})
 
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	sameOrigin := http.NewCrossOriginProtection()
+	identified := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		p, err := s.WhoIs(r.Context(), r.RemoteAddr)
 		if err != nil || !p.Authenticated() {
@@ -131,7 +136,26 @@ func (s *Server) Handler() http.Handler {
 			write(w, pr.status, map[string]Problem{"error": pr})
 			return
 		}
-		mux.ServeHTTP(w, r.WithContext(authz.With(r.Context(), p)))
+		ctx := authz.With(r.Context(), p)
+		if sameOrigin.Check(r) != nil {
+			e.Audit(ctx, "", "cross-origin browser request refused: "+r.Method+" "+r.URL.Path)
+			pr := Problem{Code: "cross_origin", Message: "browser requests from other sites cannot change anything", Hint: "Use the console on this host, the CLI or MCP.", status: http.StatusForbidden}
+			write(w, pr.status, map[string]Problem{"error": pr})
+			return
+		}
+		mux.ServeHTTP(w, r.WithContext(ctx))
+	})
+
+	// Everything that isn't the API or MCP is the console's: its files, or
+	// its shell for any page so the app can route it.
+	site := console.Handler()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		api := r.URL.Path == "/mcp" || strings.HasPrefix(r.URL.Path, "/v1/")
+		if !api && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+			site.ServeHTTP(w, r)
+			return
+		}
+		identified.ServeHTTP(w, r)
 	})
 }
 
