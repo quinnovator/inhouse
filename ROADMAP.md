@@ -6,11 +6,6 @@ need in [Discussions](https://github.com/quinnovator/inhouse/discussions).
 
 ## Now: make the alpha trustworthy
 
-- **Live services stay healthy.** Running revisions are health-checked
-  continuously, not just during deploys. A hung or crash-looping app is
-  restarted with backoff and shown as degraded in `get_service` and events.
-- **Service listeners recover on their own.** If a service's HTTPS listener
-  stops, inhouse brings it back without a daemon restart.
 - **Complete event history for every role.** Viewers and deployers see every
   event for their services, however busy the rest of the host is.
 - **Fast, precise log redaction**, however many secrets and secret versions
