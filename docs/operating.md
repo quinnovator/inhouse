@@ -130,6 +130,7 @@ HTTPS for all services pauses for the few seconds the daemon is restarting.
 | `-control-hostname` | `deploy` | The control node's name |
 | `-port-range` | `20000-29999` | Loopback ports for pod ingress |
 | `-pull-timeout` | `30m` | How long pulling each image may take |
+| `-history-retention` | `2160h` (90 days) | How long events and finished operations are kept; each service keeps its newest 20 events regardless. `0` keeps everything |
 | `-subid-base`, `-subid-count` | `1000000`, `4194304` | Must match `/etc/subuid` and `/etc/subgid` |
 
 ## 4. Backups

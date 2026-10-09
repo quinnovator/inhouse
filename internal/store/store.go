@@ -803,7 +803,8 @@ func (s *Store) Extend(ctx context.Context, live Revision, actor string) error {
 // ---- events ----
 
 // EventQuery selects events. With Since set, it returns the events after that
-// id, oldest first; otherwise the newest Limit events, oldest first.
+// id, oldest first; otherwise the newest Limit events, oldest first. Since may
+// name a pruned event; the query returns what remains after it.
 type EventQuery struct {
 	Service string
 	Since   int64
@@ -882,6 +883,70 @@ func eventServices(tx *sql.Tx) ([]string, error) {
 		out = append(out, name)
 	}
 	return out, rows.Err()
+}
+
+// Prune deletes events older than before, except each service's newest keep
+// events, and operations that finished before then. Running operations stay,
+// and a pruned operation's idempotency key can be used again. It deletes in
+// short batches so other callers aren't held up behind it.
+func (s *Store) Prune(ctx context.Context, before time.Time, keep int) (events, operations int64, err error) {
+	cutoff, keep := before.Unix(), max(keep, 1)
+	// Events are written in id order, so every event older than cutoff lies
+	// below the first one that isn't. Bounding by id keeps each service's
+	// delete on events_by_service instead of rescanning recent events.
+	var bound int64
+	err = s.db.QueryRowContext(ctx, "SELECT COALESCE((SELECT id FROM events WHERE ts>=? ORDER BY id LIMIT 1), (SELECT MAX(id)+1 FROM events), 0)", cutoff).Scan(&bound)
+	if err != nil {
+		return 0, 0, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	names, err := eventServices(tx)
+	_ = tx.Rollback()
+	if err != nil {
+		return 0, 0, err
+	}
+	// Keeping each service's newest events also keeps the newest event of
+	// all, so SQLite never reuses an id and Since stays sound.
+	for _, name := range append([]string{""}, names...) {
+		var floor int64
+		err = s.db.QueryRowContext(ctx, "SELECT id FROM events WHERE service=? ORDER BY id DESC LIMIT 1 OFFSET ?", name, keep-1).Scan(&floor)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue // no more than keep events
+		}
+		if err != nil {
+			return events, operations, err
+		}
+		n, err := s.deleteBatches(ctx, "DELETE FROM events WHERE id IN (SELECT id FROM events WHERE service=? AND id<? AND ts<? LIMIT 1000)", name, min(floor, bound), cutoff)
+		events += n
+		if err != nil {
+			return events, operations, err
+		}
+	}
+	operations, err = s.deleteBatches(ctx, "DELETE FROM operations WHERE id IN (SELECT id FROM operations WHERE state!='running' AND finished_at<? LIMIT 1000)", cutoff)
+	return events, operations, err
+}
+
+// deleteBatches runs a delete of at most 1000 rows, each in its own
+// transaction, until it deletes nothing.
+func (s *Store) deleteBatches(ctx context.Context, query string, args ...any) (int64, error) {
+	var total int64
+	for {
+		var n int64
+		err := s.write(ctx, func(tx *sql.Tx) error {
+			res, err := tx.Exec(query, args...)
+			if err == nil {
+				n, err = res.RowsAffected()
+			}
+			return err
+		})
+		total += n
+		if err != nil || n == 0 {
+			return total, err
+		}
+	}
 }
 
 // ---- namespaces ----
