@@ -326,3 +326,65 @@ func TestExtendRefusesAnExpiredService(t *testing.T) {
 		t.Fatal("extended an expired service", err)
 	}
 }
+
+func TestPruneKeepsRecentHistoryAndEachServicesNewest(t *testing.T) {
+	s := open(t)
+	ctx := context.Background()
+	old, recent := time.Now().Add(-100*24*time.Hour).Unix(), time.Now().Unix()
+	add := func(service string, ts int64, n int) {
+		for range n {
+			if _, err := s.db.Exec("INSERT INTO events(ts,service,rev,actor,kind,message) VALUES(?,?,0,'me','test','event')", ts, service); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// In time order, as the daemon writes them.
+	add("busy", old, 2500) // past one batch
+	add("quiet", old, 3)
+	add("", old, 30)
+	add("tail", old, 25)
+	add("busy", recent, 30)
+	add("tail", recent, 5)
+	op := func(id, state string, finished int64) {
+		if _, err := s.db.Exec("INSERT INTO operations(id,kind,service,state,request_hash,created_by,created_at,finished_at,idempotency_key) VALUES(?,'deploy','busy',?,'h','me',?,?,?)", id, state, old, finished, "key-"+id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	op("old-done", "succeeded", old)
+	op("old-running", "running", 0)
+	op("new-done", "failed", recent)
+	var maxID int64
+	_ = s.db.QueryRow("SELECT MAX(id) FROM events").Scan(&maxID)
+
+	events, ops, err := s.Prune(ctx, time.Now().Add(-90*24*time.Hour), 20)
+	if err != nil || events != 2500+10+10 || ops != 1 {
+		t.Fatal(events, ops, err)
+	}
+	count := func(service string) (n int) {
+		_ = s.db.QueryRow("SELECT COUNT(*) FROM events WHERE service=?", service).Scan(&n)
+		return n
+	}
+	// Recent events all stay; old ones only within a service's newest 20.
+	for service, want := range map[string]int{"busy": 30, "quiet": 3, "": 20, "tail": 20} {
+		if got := count(service); got != want {
+			t.Errorf("%q kept %d events, want %d", service, got, want)
+		}
+	}
+	for id, want := range map[string]bool{"old-done": false, "old-running": true, "new-done": true} {
+		if _, err := s.Operation(ctx, id); (err == nil) != want {
+			t.Errorf("operation %s kept=%v, want %v", id, err == nil, want)
+		}
+	}
+	if _, err := s.OperationByKey(ctx, "key-old-done"); !errors.Is(err, ErrNotFound) {
+		t.Error("pruned operation's key still taken")
+	}
+	_ = s.Event(ctx, "busy", 0, "me", "test", "after")
+	var next int64
+	_ = s.db.QueryRow("SELECT MAX(id) FROM events").Scan(&next)
+	if next != maxID+1 {
+		t.Fatalf("new event got id %d after max %d", next, maxID)
+	}
+	if again, _, _ := s.Prune(ctx, time.Now().Add(-90*24*time.Hour), 20); again != 0 {
+		t.Fatalf("second prune deleted %d events", again)
+	}
+}

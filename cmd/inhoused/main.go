@@ -59,6 +59,7 @@ func run() error {
 	subidBase := flag.Int("subid-base", 1000000, "first subordinate ID of the inhouse user (see /etc/subuid)")
 	subidCount := flag.Int("subid-count", 4194304, "number of subordinate IDs the inhouse user owns")
 	flag.DurationVar(&cfg.PullTimeout, "pull-timeout", cfg.PullTimeout, "how long pulling each image may take")
+	flag.DurationVar(&cfg.HistoryRetention, "history-retention", cfg.HistoryRetention, "how long to keep events and finished operations; 0 keeps them forever")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 	if *showVersion {
@@ -73,6 +74,9 @@ func run() error {
 	}
 	if cfg.PullTimeout <= 0 {
 		return errors.New("-pull-timeout must be positive")
+	}
+	if cfg.HistoryRetention < 0 {
+		return errors.New("-history-retention must not be negative")
 	}
 	if *subidCount < userns.Size {
 		return errors.New("-subid-count must be at least " + strconv.Itoa(userns.Size))

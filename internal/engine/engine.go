@@ -97,6 +97,9 @@ type Config struct {
 	OrphanGrace time.Duration
 	// PullTimeout bounds pulling each image.
 	PullTimeout time.Duration
+	// HistoryRetention is how long events and finished operations are kept;
+	// 0 keeps them forever.
+	HistoryRetention time.Duration
 }
 
 func DefaultConfig() Config {
@@ -115,6 +118,7 @@ func DefaultConfig() Config {
 		FailedRetention:   24 * time.Hour,
 		OrphanGrace:       10 * time.Minute,
 		PullTimeout:       30 * time.Minute,
+		HistoryRetention:  90 * 24 * time.Hour,
 	}
 }
 
@@ -126,8 +130,9 @@ type Engine struct {
 	volumes Volumes
 	edges   Edges
 
-	nudge chan struct{}
-	wg    sync.WaitGroup
+	nudge  chan struct{}
+	wg     sync.WaitGroup
+	pruned time.Time // when pass last pruned history; only Run's goroutine uses it
 
 	mu        sync.Mutex
 	busy      map[string]bool
