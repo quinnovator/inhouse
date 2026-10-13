@@ -8,8 +8,10 @@ import (
 	"time"
 
 	"github.com/quinnovator/inhouse/internal/authz"
+	"github.com/quinnovator/inhouse/internal/platform"
 	"github.com/quinnovator/inhouse/internal/spec"
 	"github.com/quinnovator/inhouse/internal/store"
+	"github.com/quinnovator/inhouse/internal/version"
 )
 
 // Every request reads its caller from ctx (see authz.With).
@@ -333,9 +335,10 @@ type ServiceView struct {
 }
 
 type ServiceDetail struct {
-	Service   ServiceView      `json:"service"`
-	Revisions []store.Revision `json:"revisions"`
-	Events    []store.Event    `json:"events"`
+	Service    ServiceView       `json:"service"`
+	Revisions  []store.Revision  `json:"revisions"`
+	Events     []store.Event     `json:"events"`
+	Operations []store.Operation `json:"operations"`
 }
 
 func view(s store.Service) ServiceView { return ServiceView{s, URL(s)} }
@@ -368,7 +371,8 @@ func (e *Engine) List(ctx context.Context) ([]ServiceView, error) {
 }
 
 // Get returns a service with its ten newest revisions, plus its live
-// revision if that is older, and its five newest events.
+// revision if that is older, its five newest events and the operations
+// still running on it.
 func (e *Engine) Get(ctx context.Context, name string) (ServiceDetail, error) {
 	if err := authz.From(ctx).RequireRead(name); err != nil {
 		return ServiceDetail{}, err
@@ -391,7 +395,29 @@ func (e *Engine) Get(ctx context.Context, name string) (ServiceDetail, error) {
 		}
 	}
 	events, err := e.store.Events(ctx, store.EventQuery{Service: name, Limit: 5})
-	return ServiceDetail{view(svc), revs, events}, err
+	if err != nil {
+		return ServiceDetail{}, err
+	}
+	ops, err := e.running(ctx, name)
+	if err != nil {
+		return ServiceDetail{}, err
+	}
+	return ServiceDetail{Service: view(svc), Revisions: revs, Events: events, Operations: ops}, nil
+}
+
+// running lists running operations (one service's, or all when service
+// is empty) as callers may see them.
+func (e *Engine) running(ctx context.Context, service string) ([]store.Operation, error) {
+	ops, err := e.store.RunningOperations(ctx, service)
+	if err != nil {
+		return nil, err
+	}
+	for i := range ops {
+		if ops[i], err = e.visible(ctx, ops[i], nil); err != nil {
+			return nil, err
+		}
+	}
+	return ops, nil
 }
 
 // Operation returns an operation the caller may read.
@@ -504,6 +530,49 @@ func (e *Engine) DeleteSecret(ctx context.Context, name string) error {
 		return err
 	}
 	return e.store.DeleteSecret(ctx, name, p.ID)
+}
+
+// ---- platform ----
+
+// DaemonView is the daemon itself: what it is and how long it has run.
+type DaemonView struct {
+	Version       string `json:"version"`
+	StartedAt     int64  `json:"started_at"`
+	UptimeSeconds int64  `json:"uptime_seconds"`
+}
+
+// PlatformView is the whole single-host platform at a moment: the
+// daemon, a host sample and every operation still running. Host
+// metrics are admin-only, like secrets; no grant narrower than admin
+// covers the host itself.
+type PlatformView struct {
+	Daemon            DaemonView        `json:"daemon"`
+	Host              platform.Snapshot `json:"host"`
+	RunningOperations []store.Operation `json:"running_operations"`
+}
+
+// Platform returns the platform view. Only admins may see host-wide
+// information; the running operations it carries are therefore all of
+// them, while everyone else sees operations only on services they can
+// read (see Get).
+func (e *Engine) Platform(ctx context.Context) (PlatformView, error) {
+	if err := authz.From(ctx).RequireAdmin(); err != nil {
+		return PlatformView{}, err
+	}
+	ops, err := e.running(ctx, "")
+	if err != nil {
+		return PlatformView{}, err
+	}
+	now := time.Now()
+	return PlatformView{
+		Daemon: DaemonView{
+			Version:       version.Version,
+			StartedAt:     e.startedAt.Unix(),
+			UptimeSeconds: int64(now.Sub(e.startedAt).Seconds()),
+		},
+		Host:              e.collector.Collect(),
+		RunningOperations: ops,
+	}, nil
 }
 
 // ---- plan ----

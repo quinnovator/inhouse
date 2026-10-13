@@ -136,6 +136,34 @@ func TestRecordReservesPortsAndSerializesOperations(t *testing.T) {
 	}
 }
 
+func TestRunningOperationsFilterAndFinish(t *testing.T) {
+	s := open(t)
+	ctx := context.Background()
+	a, err := s.Record(ctx, Request{Stack: stack(t, "a"), Kind: Deploy, RequestHash: "a", Actor: "me", PortLow: 20000, PortHigh: 20009})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.Record(ctx, Request{Stack: stack(t, "b"), Kind: Deploy, RequestHash: "b", Actor: "me", PortLow: 20000, PortHigh: 20009})
+	if err != nil {
+		t.Fatal(err)
+	}
+	all, err := s.RunningOperations(ctx, "")
+	if err != nil || len(all) != 2 || all[0].ID != a.ID || all[1].ID != b.ID {
+		t.Fatal(all, err)
+	}
+	only, err := s.RunningOperations(ctx, "b")
+	if err != nil || len(only) != 1 || only[0].ID != b.ID {
+		t.Fatal(only, err)
+	}
+	if err = s.Complete(ctx, a, ""); err != nil {
+		t.Fatal(err)
+	}
+	all, err = s.RunningOperations(ctx, "")
+	if err != nil || len(all) != 1 || all[0].ID != b.ID {
+		t.Fatal("finished operation still running", all, err)
+	}
+}
+
 func TestTombstoneAndExpiry(t *testing.T) {
 	s := open(t)
 	ctx := context.Background()
