@@ -30,7 +30,12 @@ deploy hello: operation 3f6c… (idempotency key 9b1e…)
 
 The web console at `https://deploy.<tailnet>.ts.net` shows every service,
 its health and who deployed it, with live logs, revisions and the event
-timeline one click away:
+timeline one click away.
+
+Admins also get a Platform page showing the daemon's version and uptime,
+the host's available storage, CPU use and memory pressure, and every running
+operation. Each service page shows its running operations to everyone who
+can read that service.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/console-services-dark.png">

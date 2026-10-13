@@ -469,6 +469,25 @@ func (s *Store) RunningOperation(ctx context.Context, service string) (Operation
 	return scanOperation(s.db.QueryRowContext(ctx, "SELECT "+operationCols+" FROM operations WHERE service=? AND state='running'", service))
 }
 
+// RunningOperations lists operations still running, oldest first: one
+// service's when service is named, or every service's when it is empty.
+func (s *Store) RunningOperations(ctx context.Context, service string) ([]Operation, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT "+operationCols+" FROM operations WHERE state='running' AND (?='' OR service=?) ORDER BY created_at,service,id", service, service)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := []Operation{}
+	for rows.Next() {
+		o, err := scanOperation(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, o)
+	}
+	return out, rows.Err()
+}
+
 // OperationByKey finds the operation an idempotency key created.
 func (s *Store) OperationByKey(ctx context.Context, key string) (Operation, error) {
 	if key == "" {

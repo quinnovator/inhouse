@@ -3,6 +3,7 @@ import { Link, createFileRoute } from '@tanstack/react-router'
 import { type ReactNode, useState } from 'react'
 import { ActionDialog, DeleteDialog, RollbackDialog } from '~/components/dialogs'
 import { LogView } from '~/components/LogView'
+import { RunningOperations } from '~/components/RunningOperations'
 import { useAccess } from '~/components/shell'
 import { EventFeed, Menu, Pill, ProblemAlert, Spinner, Time } from '~/components/ui'
 import { ApiError, api, type ServiceAction } from '~/lib/api'
@@ -267,6 +268,10 @@ function Loaded({ detail, open }: { detail: ServiceDetail; open: (d: Dialog) => 
           </section>
         </div>
         <div className="side stack">
+          <section className="card" aria-labelledby="service-operations-h">
+            <div className="card-head"><h2 id="service-operations-h">Running operations</h2></div>
+            <div className="card-body"><RunningOperations operations={detail.operations ?? []} service={false} /></div>
+          </section>
           <section className="card" aria-labelledby="health-h">
             <div className="card-head">
               <h2 id="health-h">Health</h2>

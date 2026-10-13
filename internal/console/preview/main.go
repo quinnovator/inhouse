@@ -27,6 +27,7 @@ import (
 	"github.com/quinnovator/inhouse/internal/api"
 	"github.com/quinnovator/inhouse/internal/authz"
 	"github.com/quinnovator/inhouse/internal/engine"
+	"github.com/quinnovator/inhouse/internal/platform"
 	"github.com/quinnovator/inhouse/internal/spec"
 	"github.com/quinnovator/inhouse/internal/store"
 	"github.com/quinnovator/inhouse/internal/vault"
@@ -61,6 +62,7 @@ func main() {
 	cfg := engine.DefaultConfig()
 	cfg.Drain = 2 * time.Second
 	eng := engine.New(cfg, db, v, rt, volumes{}, &edges{ports: map[string]int{}})
+	eng.SetPlatformCollector(previewHost{})
 	ctx := context.Background()
 	go func() { _ = eng.Run(ctx) }()
 	go seed(eng, v, rt)
@@ -251,6 +253,31 @@ func (f *runtime) Logs(_ context.Context, r store.Revision, container string, ta
 func (f *runtime) Pods(context.Context) ([]store.Revision, error)     { return nil, nil }
 func (f *runtime) RemoveOrphan(context.Context, store.Revision) error { return nil }
 func (f *runtime) RemoveServiceSecrets(context.Context, string) error { return nil }
+
+// previewHost seeds the Platform page with a plausible host, as the
+// fakes below seed services. It exists only in this development aid.
+type previewHost struct{}
+
+func (previewHost) Collect() platform.Snapshot {
+	storageTotal, storageFree, storageAvailable := uint64(512<<30), uint64(210<<30), uint64(195<<30)
+	cpu := 23.4
+	memTotal, memAvailable, memUsed := uint64(16<<30), uint64(9<<30), uint64(7<<30)
+	swapTotal, swapFree := uint64(4<<30), uint64(4<<30)
+	pressure := 0.12
+	return platform.Snapshot{
+		Hostname:    "inhouse",
+		OS:          "linux",
+		Arch:        "amd64",
+		LogicalCPUs: 4,
+		Storage:     platform.Storage{Status: platform.StatusOK, TotalBytes: &storageTotal, FreeBytes: &storageFree, AvailableBytes: &storageAvailable},
+		CPU:         platform.CPU{Status: platform.StatusOK, UtilizationPercent: &cpu},
+		Memory: platform.Memory{
+			Status: platform.StatusOK, TotalBytes: &memTotal, AvailableBytes: &memAvailable, UsedBytes: &memUsed,
+			SwapTotalBytes: &swapTotal, SwapFreeBytes: &swapFree, PressureSomeAvg10Percent: &pressure,
+		},
+		SampledAt: time.Now().Unix(),
+	}
+}
 
 type volumes struct{}
 
