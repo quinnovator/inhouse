@@ -67,6 +67,24 @@ logs and events, and offers only what your grants allow. Deployers can plan,
 deploy, roll back and delete their ephemeral services; admins can do
 everything and manage secrets.
 
+Every service page shows operations still running on that service, with
+their ID, kind, revision (once resolved), start time and actor. These follow
+the service's read grants, including for viewers. Admins also have a
+**Platform** page with daemon version, start time and uptime; the current
+host's name, OS, architecture and resource readings; and running operations
+across all services. Host-wide information is admin-only, even for viewers
+whose service grants cover `*`.
+
+The Platform page refreshes every five seconds. Storage is the space
+available to the daemon on the filesystem holding its configured data root.
+CPU use is whole-host busy time between readings; the first reading says
+"Collecting…". Memory reports `MemAvailable`, total minus available as used,
+swap space, and Linux PSI's `some avg10` percentage (time some task stalled
+on memory over the last ten seconds). A missing pressure reading does not
+hide valid memory readings. Unsupported hosts or failed readings say
+"Unavailable", rather than zero. See [host metrics](operating.md#host-metrics)
+for collection limits.
+
 There is nothing to sign in to. The page's own files carry no data and load
 for anyone who can reach the control node; everything it shows comes from
 the `/v1` API, where every call is identified and authorized. Because the
@@ -153,7 +171,8 @@ refuse browser requests from other origins.
 | Route | |
 | --- | --- |
 | `GET /v1/whoami` | Identity and grants |
-| `GET /v1/services`, `GET /v1/services/{name}` | List; detail with revisions and events |
+| `GET /v1/platform` | Admin-only daemon, host metrics and all running operations |
+| `GET /v1/services`, `GET /v1/services/{name}` | List; detail with revisions, events and running operations under service read grants |
 | `POST /v1/plan`, `POST /v1/deploy` | Body: the spec (YAML or JSON) |
 | `POST /v1/services/{name}/rollback` | `{"to_rev": 7, "restore_volumes": false}` |
 | `POST /v1/services/{name}/restart`, `.../redeploy`, `.../stop`, `.../start` | No body; returns an operation |

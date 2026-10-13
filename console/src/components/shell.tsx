@@ -70,6 +70,11 @@ function Header() {
             </Link>
           )}
           {can.admin && (
+            <Link to="/platform" aria-current={current('platform')}>
+              Platform
+            </Link>
+          )}
+          {can.admin && (
             <Link to="/secrets" aria-current={current('secrets')}>
               Secrets
             </Link>

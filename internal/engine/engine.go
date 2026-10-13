@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/quinnovator/inhouse/internal/platform"
 	"github.com/quinnovator/inhouse/internal/spec"
 	"github.com/quinnovator/inhouse/internal/store"
 	"github.com/quinnovator/inhouse/internal/vault"
@@ -123,12 +124,14 @@ func DefaultConfig() Config {
 }
 
 type Engine struct {
-	cfg     Config
-	store   *store.Store
-	vault   *vault.Vault
-	runtime Runtime
-	volumes Volumes
-	edges   Edges
+	cfg       Config
+	store     *store.Store
+	vault     *vault.Vault
+	runtime   Runtime
+	volumes   Volumes
+	edges     Edges
+	startedAt time.Time
+	collector platform.Collector
 
 	nudge  chan struct{}
 	wg     sync.WaitGroup
@@ -154,12 +157,22 @@ type relistens struct {
 func New(cfg Config, s *store.Store, v *vault.Vault, r Runtime, vol Volumes, e Edges) *Engine {
 	return &Engine{
 		cfg: cfg, store: s, vault: v, runtime: r, volumes: vol, edges: e,
+		startedAt: time.Now(), collector: platform.Unsupported{},
 		nudge:     make(chan struct{}, 1),
 		busy:      map[string]bool{},
 		missed:    map[string]bool{},
 		lastError: map[string]string{},
 		failures:  map[string]failures{},
 		relistens: map[string]relistens{},
+	}
+}
+
+// SetPlatformCollector installs the host sampler Platform reports from.
+// The daemon passes platform.New for its data root; without one, every
+// metric is unavailable. Call it before serving requests.
+func (e *Engine) SetPlatformCollector(c platform.Collector) {
+	if c != nil {
+		e.collector = c
 	}
 }
 

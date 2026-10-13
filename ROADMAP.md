@@ -6,10 +6,6 @@ need in [Discussions](https://github.com/quinnovator/inhouse/discussions).
 
 ## Next
 
-- **The platform in the console.** The console shows every service you can
-  see, with its revisions, events and logs. Next it shows the platform
-  itself: the daemon, its hosts, and each host's available storage, CPU use
-  and memory pressure, plus the operations running on each service.
 - **Bundled agent skills.** Skills shipped with inhouse that teach agents to
   write stack specs, deploy, debug and roll back on the platform, so they
   don't have to work it out from the MCP tools alone.

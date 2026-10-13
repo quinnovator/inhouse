@@ -21,6 +21,7 @@ import (
 	"github.com/quinnovator/inhouse/internal/authz"
 	"github.com/quinnovator/inhouse/internal/edge"
 	"github.com/quinnovator/inhouse/internal/engine"
+	"github.com/quinnovator/inhouse/internal/platform"
 	"github.com/quinnovator/inhouse/internal/podman"
 	"github.com/quinnovator/inhouse/internal/store"
 	"github.com/quinnovator/inhouse/internal/tailnet"
@@ -106,6 +107,7 @@ func run() error {
 	defer func() { _ = edges.Close() }()
 
 	eng := engine.New(cfg, db, secrets, pods, vols, edges)
+	eng.SetPlatformCollector(platform.New(*dataDir))
 	reconciled := make(chan error, 1)
 	go func() { reconciled <- eng.Run(ctx) }()
 	defer func() { cancel(); <-reconciled }()

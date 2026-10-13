@@ -6,6 +6,7 @@ import type {
   LogPage,
   Operation,
   Plan,
+  Platform,
   Principal,
   Problem,
   SecretInfo,
@@ -92,6 +93,7 @@ export type LogQuery = { rev?: number; container?: string; tail?: number; cursor
 
 export const api = {
   whoami: (signal?: AbortSignal) => call<Principal>('GET', '/v1/whoami', { signal }),
+  platform: (signal?: AbortSignal) => call<Platform>('GET', '/v1/platform', { signal }),
   services: (signal?: AbortSignal) => call<Service[]>('GET', '/v1/services', { signal }),
   service: (name: string, signal?: AbortSignal) => call<ServiceDetail>('GET', `/v1/services/${seg(name)}`, { signal }),
   events: ({ service, since, limit }: EventQuery, signal?: AbortSignal) =>

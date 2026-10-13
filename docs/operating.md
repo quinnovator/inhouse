@@ -117,6 +117,25 @@ inhouse deploy examples/hello.yaml
 migrates itself forward; the reconciler restores every service on start.
 HTTPS for all services pauses for the few seconds the daemon is restarting.
 
+### Host metrics
+
+The console's admin-only Platform page samples the current single host when
+requested. Linux readings use `/proc/stat`, `/proc/meminfo`, optional
+`/proc/pressure/memory`, and `statfs` on `-data-dir`. No elevated privileges
+or additional daemon flags are needed. CPU use excludes idle and I/O wait,
+counts guest time once, and requires two successful readings. The interval
+is between host samples, shared by all admin clients.
+
+Memory availability requires the kernel's `MemAvailable` field (Linux 3.14
+or later); it is different from free memory. Memory pressure requires PSI
+support and readable pressure data; it can be unavailable while memory use
+is still shown. Storage means filesystem space available to the daemon,
+including any filesystem reservations, rather than a per-service quota.
+These readings are host-wide, not per-container resource use. Non-Linux
+development builds report host identity with metrics unavailable. Failed
+reads omit values and report short reason codes, never filesystem paths or
+raw errors. The development console preview uses fixed example host data.
+
 ### Daemon flags
 
 | Flag | Default | |
