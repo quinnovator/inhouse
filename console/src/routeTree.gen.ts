@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as DeployRouteImport } from './routes/deploy'
 import { Route as EventsRouteImport } from './routes/events'
+import { Route as PlatformRouteImport } from './routes/platform'
 import { Route as SecretsRouteImport } from './routes/secrets'
 import { Route as ServicesNameRouteImport } from './routes/services.$name'
 
@@ -30,6 +31,11 @@ const EventsRoute = EventsRouteImport.update({
   path: '/events',
   getParentRoute: () => rootRouteImport,
 } as any)
+const PlatformRoute = PlatformRouteImport.update({
+  id: '/platform',
+  path: '/platform',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SecretsRoute = SecretsRouteImport.update({
   id: '/secrets',
   path: '/secrets',
@@ -45,6 +51,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/deploy': typeof DeployRoute
   '/events': typeof EventsRoute
+  '/platform': typeof PlatformRoute
   '/secrets': typeof SecretsRoute
   '/services/$name': typeof ServicesNameRoute
 }
@@ -52,6 +59,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/deploy': typeof DeployRoute
   '/events': typeof EventsRoute
+  '/platform': typeof PlatformRoute
   '/secrets': typeof SecretsRoute
   '/services/$name': typeof ServicesNameRoute
 }
@@ -60,21 +68,31 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/deploy': typeof DeployRoute
   '/events': typeof EventsRoute
+  '/platform': typeof PlatformRoute
   '/secrets': typeof SecretsRoute
   '/services/$name': typeof ServicesNameRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/deploy' | '/events' | '/secrets' | '/services/$name'
+  fullPaths:
+    '/' | '/deploy' | '/events' | '/platform' | '/secrets' | '/services/$name'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/deploy' | '/events' | '/secrets' | '/services/$name'
-  id: '__root__' | '/' | '/deploy' | '/events' | '/secrets' | '/services/$name'
+  to: '/' | '/deploy' | '/events' | '/platform' | '/secrets' | '/services/$name'
+  id:
+    | '__root__'
+    | '/'
+    | '/deploy'
+    | '/events'
+    | '/platform'
+    | '/secrets'
+    | '/services/$name'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   DeployRoute: typeof DeployRoute
   EventsRoute: typeof EventsRoute
+  PlatformRoute: typeof PlatformRoute
   SecretsRoute: typeof SecretsRoute
   ServicesNameRoute: typeof ServicesNameRoute
 }
@@ -102,6 +120,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof EventsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/platform': {
+      id: '/platform'
+      path: '/platform'
+      fullPath: '/platform'
+      preLoaderRoute: typeof PlatformRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/secrets': {
       id: '/secrets'
       path: '/secrets'
@@ -123,6 +148,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   DeployRoute: DeployRoute,
   EventsRoute: EventsRoute,
+  PlatformRoute: PlatformRoute,
   SecretsRoute: SecretsRoute,
   ServicesNameRoute: ServicesNameRoute,
 }

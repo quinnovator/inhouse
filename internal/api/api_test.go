@@ -218,6 +218,39 @@ func TestCrossOriginBrowserRequestsCannotWrite(t *testing.T) {
 	}
 }
 
+func TestPlatformThroughHTTP(t *testing.T) {
+	srv, _ := newServer(t)
+	if code, body := call(t, srv, "agent", "POST", "/v1/deploy", preview); code != http.StatusOK {
+		t.Fatal(code, body)
+	}
+	// The service's own detail shows its running operation to a reader…
+	code, body := call(t, srv, "agent", "GET", "/v1/services/preview-a", "")
+	var detail engine.ServiceDetail
+	if code != http.StatusOK || json.Unmarshal([]byte(body), &detail) != nil || len(detail.Operations) != 1 || detail.Operations[0].State != store.Running {
+		t.Fatal(code, body)
+	}
+	// …but the host-wide platform view is admin-only.
+	if code, body = call(t, srv, "agent", "GET", "/v1/platform", ""); code != http.StatusForbidden || !strings.Contains(body, "permission_denied") {
+		t.Fatal("non-admin saw the platform", code, body)
+	}
+	code, body = call(t, srv, "admin", "GET", "/v1/platform", "")
+	var got engine.PlatformView
+	if code != http.StatusOK || json.Unmarshal([]byte(body), &got) != nil {
+		t.Fatal(code, body)
+	}
+	if got.Daemon.Version == "" || got.Daemon.StartedAt <= 0 || got.Host.OS == "" || got.Host.Arch == "" {
+		t.Fatalf("%+v", got)
+	}
+	if len(got.RunningOperations) != 1 || got.RunningOperations[0].Service != "preview-a" {
+		t.Fatalf("%+v", got.RunningOperations)
+	}
+	// No collector is installed in this server: metrics are unavailable,
+	// never zero-filled.
+	if got.Host.Storage.Status != "unavailable" || got.Host.Storage.TotalBytes != nil || got.Host.CPU.UtilizationPercent != nil {
+		t.Fatalf("%+v", got.Host)
+	}
+}
+
 func TestServiceActionsThroughHTTP(t *testing.T) {
 	srv, _ := newServer(t)
 	if code, body := call(t, srv, "agent", "POST", "/v1/deploy", preview); code != http.StatusOK {

@@ -13,6 +13,15 @@ export function useServices() {
   return useQuery({ queryKey: ['services'], queryFn: ({ signal }) => api.services(signal), refetchInterval: 5000 })
 }
 
+export function usePlatform(enabled: boolean) {
+  return useQuery({
+    queryKey: ['platform'],
+    queryFn: ({ signal }) => api.platform(signal),
+    enabled,
+    refetchInterval: 5000,
+  })
+}
+
 export function useService(name: string) {
   return useQuery({
     queryKey: ['service', name],

@@ -34,6 +34,11 @@ pnpm -C console dev                        # http://localhost:3000, /v1 proxied 
 The preview's caller is an admin. Set a cookie `as` to `agent` (a
 `preview-*` deployer), `viewer` or `nobody` to see other grants.
 
+The admin-only Platform page includes fixed example Linux host metrics in
+the preview; production uses the configured data filesystem and Linux host
+readings. Service pages show running operations for every role allowed to
+read the service. Platform data polls every five seconds.
+
 ```sh
 pnpm -C console typecheck
 pnpm -C console test                       # unit tests for src/lib

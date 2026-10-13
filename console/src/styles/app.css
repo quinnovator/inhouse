@@ -184,6 +184,12 @@ p { margin: 0; }
 .split > .side { flex: 1 1 340px; min-width: 0; }
 
 .stack { display: flex; flex-direction: column; gap: 24px; }
+.host-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
+.metric-value { font-size: 22px; font-weight: 600; margin: 8px 0; }
+.row.between { justify-content: space-between; }
+.operations-grid { min-width: 560px; }
+.service-operations-grid { min-width: 400px; }
+@media (max-width: 720px) { .host-metrics { grid-template-columns: 1fr; } }
 .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .grow { flex: 1 1 auto; }
 

@@ -37,6 +37,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/whoami", func(w http.ResponseWriter, r *http.Request) {
 		reply(w, r, e)(e.Whoami(r.Context()))
 	})
+	mux.HandleFunc("GET /v1/platform", func(w http.ResponseWriter, r *http.Request) {
+		reply(w, r, e)(e.Platform(r.Context()))
+	})
 	mux.HandleFunc("GET /v1/services", func(w http.ResponseWriter, r *http.Request) {
 		reply(w, r, e)(e.List(r.Context()))
 	})

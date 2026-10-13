@@ -79,6 +79,40 @@ export type ServiceDetail = {
   service: Service
   revisions: Revision[]
   events: Event[]
+  operations: Operation[]
+}
+
+export type MetricStatus = 'ok' | 'unavailable' | 'warming_up'
+export type HostSnapshot = {
+  hostname?: string
+  os: string
+  arch: string
+  logical_cpus: number
+  sampled_at: number
+  storage: {
+    status: MetricStatus
+    reason?: string
+    total_bytes?: number
+    free_bytes?: number
+    available_bytes?: number
+  }
+  cpu: { status: MetricStatus; reason?: string; utilization_percent?: number }
+  memory: {
+    status: MetricStatus
+    reason?: string
+    total_bytes?: number
+    available_bytes?: number
+    used_bytes?: number
+    swap_total_bytes?: number
+    swap_free_bytes?: number
+    pressure_some_avg10_percent?: number
+  }
+}
+
+export type Platform = {
+  daemon: { version: string; started_at: number; uptime_seconds: number }
+  host: HostSnapshot
+  running_operations: Operation[]
 }
 
 export type Operation = {
