@@ -15,6 +15,7 @@ import (
 	"github.com/quinnovator/inhouse/internal/engine"
 	"github.com/quinnovator/inhouse/internal/spec"
 	"github.com/quinnovator/inhouse/internal/store"
+	"github.com/quinnovator/inhouse/internal/version"
 )
 
 // WhoIs identifies the caller behind a remote address.
@@ -166,6 +167,7 @@ func (s *Server) Handler() http.Handler {
 	// its shell for any page so the app can route it.
 	site := console.Handler()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(version.Header, version.Version)
 		api := r.URL.Path == "/mcp" || strings.HasPrefix(r.URL.Path, "/v1/")
 		if !api && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
 			site.ServeHTTP(w, r)
