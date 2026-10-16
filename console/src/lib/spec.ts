@@ -33,8 +33,9 @@ export function shown(svc: Service, revs: Revision[]) {
 
 // deployable turns a revision's stored spec back into a document the
 // deploy API accepts: platform-set fields removed, container order kept.
+// Stored specs are always in spec format version 1.
 export function deployable(spec: Stack) {
-  const out: Record<string, unknown> = { name: spec.name, expose: spec.expose }
+  const out: Record<string, unknown> = { version: 1, name: spec.name, expose: spec.expose }
   if (spec.ttl) out.ttl = spec.ttl
   if (spec.update_strategy) out.update_strategy = spec.update_strategy
   const containers: Record<string, unknown> = {}

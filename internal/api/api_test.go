@@ -16,6 +16,7 @@ import (
 	"github.com/quinnovator/inhouse/internal/engine"
 	"github.com/quinnovator/inhouse/internal/store"
 	"github.com/quinnovator/inhouse/internal/vault"
+	"github.com/quinnovator/inhouse/internal/version"
 )
 
 // newServer serves the API with callers named by an X-Test-Caller header:
@@ -73,6 +74,22 @@ func call(t *testing.T, srv *httptest.Server, caller, method, path, body string)
 }
 
 const preview = "name: preview-a\nttl: 1h\ncontainers:\n  web: {image: docker.io/traefik/whoami:1, port: 80}\n"
+
+func TestEveryResponseCarriesTheVersion(t *testing.T) {
+	srv, _ := newServer(t)
+	for _, caller := range []string{"admin", "unknown"} {
+		req, _ := http.NewRequest("GET", srv.URL+"/v1/whoami", nil)
+		req.Header.Set("X-Test-Caller", caller)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if got := resp.Header.Get(version.Header); got != version.Version {
+			t.Errorf("%s: %s is %q", caller, version.Header, got)
+		}
+	}
+}
 
 func TestCallersNeedAGrant(t *testing.T) {
 	srv, db := newServer(t)

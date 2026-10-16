@@ -23,6 +23,10 @@ import (
 // MaxBytes bounds a spec document.
 const MaxBytes = 64 << 10
 
+// Version is the newest spec format this build reads. Later formats either
+// only add fields or come with a new version that is still accepted here.
+const Version = 1
+
 const (
 	ExposeTailnet = "tailnet"
 	ExposeFunnel  = "funnel"
@@ -45,6 +49,11 @@ func ValidName(s string) bool { return nameRE.MatchString(s) }
 func Pinned(image string) bool { return digestRE.MatchString(image) }
 
 type Stack struct {
+	// SpecVersion is the format the document was written in; nil means it
+	// gave none and was read as version 1. It describes the document, not the
+	// stack, so it is never stored or hashed: adding it to a spec leaves a
+	// redeploy a no-op.
+	SpecVersion    *int                 `json:"-" yaml:"version"`
 	Name           string               `json:"name" yaml:"name"`
 	Expose         string               `json:"expose" yaml:"expose"`
 	TTL            *string              `json:"ttl,omitempty" yaml:"ttl"`
@@ -106,6 +115,10 @@ func Parse(raw []byte) (Stack, error) {
 	}
 	root := doc.Content[0]
 	for i := 0; i+1 < len(root.Content); i += 2 {
+		// A null version decodes like a missing one; only omitting it means 1.
+		if root.Content[i].Value == "version" && root.Content[i+1].Tag == "!!null" {
+			return s, fmt.Errorf("version: expected %d", Version)
+		}
 		if root.Content[i].Value != "containers" {
 			continue
 		}
@@ -122,6 +135,11 @@ func Parse(raw []byte) (Stack, error) {
 
 // Validate checks every rule and fills in defaults.
 func (s *Stack) Validate() error {
+	if v := s.SpecVersion; v != nil && *v > Version {
+		return fmt.Errorf("version: %d is newer than this inhouse reads (up to %d); upgrade it", *v, Version)
+	} else if v != nil && *v < 1 {
+		return fmt.Errorf("version: expected %d", Version)
+	}
 	if !ValidName(s.Name) {
 		return errors.New("name: must be a DNS label of 1–40 lowercase letters, digits or hyphens")
 	}

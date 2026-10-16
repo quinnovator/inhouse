@@ -9,6 +9,7 @@ package mcpbridge
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -98,6 +99,11 @@ func serve(ctx context.Context, base string, client *http.Client) error {
 		return err
 	}
 	defer func() { _ = session.Close() }()
+	if info := session.InitializeResult().ServerInfo; info != nil {
+		if msg := version.Mismatch(info.Version); msg != "" {
+			_, _ = fmt.Fprintln(os.Stderr, "inhouse:", msg) // stdout carries MCP
+		}
+	}
 	tools, err := session.ListTools(ctx, nil)
 	if err != nil {
 		return err

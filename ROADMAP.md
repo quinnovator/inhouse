@@ -9,12 +9,9 @@ need in [Discussions](https://github.com/quinnovator/inhouse/discussions).
 - **Bundled agent skills.** Skills shipped with inhouse that teach agents to
   write stack specs, deploy, debug and roll back on the platform, so they
   don't have to work it out from the MCP tools alone.
-- **A versioned stack spec.** Specs carry `version: 1`, and future changes
-  are additive or come with a new version the daemon still accepts.
 - **Boring upgrades.** The database is backed up before every migration,
   upgrades from each release are tested in CI, and redeploying an unchanged
   spec stays a no-op across upgrades.
-- **Version checks.** The CLI warns when it and the daemon disagree.
 - **An end-to-end test** in CI that deploys, crashes, recovers, rolls back and
   deletes a real service.
 - **Any Linux with rootless Podman.** Fedora CoreOS stays the recommended

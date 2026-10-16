@@ -1,5 +1,6 @@
 # The smallest useful stack: one container that echoes the request back,
 # including the Tailscale-User-* headers inhouse adds.
+version: 1
 name: hello
 containers:
   web:
