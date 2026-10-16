@@ -1,0 +1,27 @@
+name: notes
+containers:
+  db:
+    image: docker.io/library/postgres:17
+    env:
+      POSTGRES_USER: notes
+      POSTGRES_DB: notes
+    secrets:
+      POSTGRES_PASSWORD: notes-db-password
+    volumes:
+      data: /var/lib/postgresql/data
+    health:
+      command: ["pg_isready", "-U", "notes"]
+  web:
+    image: ghcr.io/example/notes:1.0.0
+    port: 8080
+    env:
+      DATABASE_HOST: localhost
+      DATABASE_USER: notes
+      LOG_LEVEL: debug
+    secrets:
+      DATABASE_PASSWORD: notes-db-password
+    health:
+      path: /healthz
+      timeout: 10s
+    resources:
+      memory: 256Mi
