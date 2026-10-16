@@ -117,6 +117,26 @@ inhouse deploy examples/hello.yaml
 migrates itself forward; the reconciler restores every service on start.
 HTTPS for all services pauses for the few seconds the daemon is restarting.
 
+Before migrating, the daemon copies the database to
+`/var/lib/inhouse/state/inhouse.db.<UTC time>.v<schema version>.bak` and
+keeps the newest three. If it can't write the copy, it refuses to migrate and
+doesn't start, and the database is left as it was. A newer database than the
+binary understands is refused too, and the error names the newest backup.
+
+To undo an upgrade, put the backup back and reinstall the old release:
+
+```sh
+sudo systemctl stop inhoused inhouse-litestream
+cd /var/lib/inhouse/state
+sudo rm -f inhouse.db-wal inhouse.db-shm
+sudo install -o inhouse -g inhouse -m 0600 inhouse.db.<UTC time>.v<N>.bak inhouse.db
+sudo bash install.sh ...    # from the old release, as above
+sudo systemctl start inhouse-litestream
+```
+
+Anything deployed since the upgrade is lost from the database, though its
+volumes stay on disk.
+
 ### Host metrics
 
 The console's admin-only Platform page samples the current single host when

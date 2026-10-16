@@ -4,8 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -414,5 +417,139 @@ func TestPruneKeepsRecentHistoryAndEachServicesNewest(t *testing.T) {
 	}
 	if again, _, _ := s.Prune(ctx, time.Now().Add(-90*24*time.Hour), 20); again != 0 {
 		t.Fatalf("second prune deleted %d events", again)
+	}
+}
+
+// v1 writes a version 1 database holding one live service.
+func v1(t *testing.T) string {
+	t.Helper()
+	file := filepath.Join(t.TempDir(), "state.db")
+	db, err := sql.Open("sqlite", file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err = db.Exec(schemaV1 + "; PRAGMA user_version=1;" +
+		"INSERT INTO services(name,kind,current_rev,created_by,created_at) VALUES('live','persistent',1,'me',0)"); err != nil {
+		t.Fatal(err)
+	}
+	return file
+}
+
+func userVersion(t *testing.T, file string) (version, services int) {
+	t.Helper()
+	db, err := sql.Open("sqlite", file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if err = db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err = db.QueryRow("SELECT count(*) FROM services").Scan(&services); err != nil {
+		t.Fatal(err)
+	}
+	return version, services
+}
+
+func TestMigrationBacksUpFirst(t *testing.T) {
+	file := v1(t)
+	s, err := Open(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Close()
+	b, err := backups(file)
+	if err != nil || len(b) != 1 || !strings.HasSuffix(b[0], ".v1.bak") {
+		t.Fatal(b, err)
+	}
+	if fi, err := os.Stat(b[0]); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatal("backup readable by others", fi.Mode(), err)
+	}
+	if v, n := userVersion(t, b[0]); v != 1 || n != 1 {
+		t.Fatal("backup isn't the version 1 database", v, n)
+	}
+	// Reopening the migrated database takes no further backup.
+	if s, err = Open(file); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Close()
+	if b, _ = backups(file); len(b) != 1 {
+		t.Fatal(b)
+	}
+}
+
+func TestNewDatabaseTakesNoBackup(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "state.db")
+	s, err := Open(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Close()
+	if b, _ := backups(file); len(b) != 0 {
+		t.Fatal(b)
+	}
+}
+
+func TestMigrationRefusedWithoutBackup(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes to read-only directories")
+	}
+	file := v1(t)
+	// Another connection keeps the WAL files, so only creating the backup
+	// needs the read-only directory.
+	db, err := sql.Open("sqlite", file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err = db.Exec("PRAGMA journal_mode=WAL; SELECT count(*) FROM services"); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Dir(file)
+	if err = os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	if s, err := Open(file); err == nil || !strings.Contains(err.Error(), "back up before migrating") {
+		if err == nil {
+			_ = s.Close()
+		}
+		t.Fatal("migrated without a backup", err)
+	}
+	if v, _ := userVersion(t, file); v != 1 {
+		t.Fatal("migrated without a backup", v)
+	}
+}
+
+func TestOldBackupsArePruned(t *testing.T) {
+	file := v1(t)
+	for _, stamp := range []string{"20250101T000000.000Z", "20250102T000000.000Z", "20250103T000000.000Z"} {
+		if err := os.WriteFile(file+"."+stamp+".v1.bak", nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := Open(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Close()
+	b, _ := backups(file)
+	if len(b) != keepBackups || strings.Contains(b[0], "20250101") || !strings.Contains(b[0], "20250102") {
+		t.Fatal(b)
+	}
+}
+
+func TestDowngradeNamesTheNewestBackup(t *testing.T) {
+	file := v1(t)
+	s, err := Open(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = s.db.Exec(fmt.Sprintf("PRAGMA user_version=%d", len(migrations)+1))
+	_ = s.Close()
+	b, _ := backups(file)
+	if _, err = Open(file); err == nil || !strings.Contains(err.Error(), b[0]) {
+		t.Fatal(err)
 	}
 }
