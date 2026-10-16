@@ -221,35 +221,37 @@ const keepBackups = 3
 // backup copies the database beside itself before Open migrates it, as
 // <file>.<UTC time>.v<version>.bak, so an upgrade can be undone by stopping
 // the daemon, reinstalling the old binary and copying the backup back.
-// Without a backup Open refuses to migrate. Older backups are pruned first,
-// so a daemon that keeps failing to migrate can't fill the disk with them.
+// Without a backup Open refuses to migrate. Older backups are pruned only
+// once the new one is written, so failed attempts never cost an old one, and
+// a failed copy is removed, so they can't fill the disk either.
 func backup(db *sql.DB, file string, version int) error {
-	old, err := backups(file)
-	if err != nil {
-		return err
-	}
-	for len(old) >= keepBackups {
-		if err = os.Remove(old[0]); err != nil {
-			return err
-		}
-		old = old[1:]
-	}
 	// Milliseconds keep a quick restart after a failed migration from
 	// colliding with the backup the failed attempt took.
 	stamp := time.Now().UTC().Format("20060102T150405.000Z")
 	to := fmt.Sprintf("%s.%s.v%d.bak", file, stamp, version)
-	// VACUUM INTO writes a consistent copy, WAL included, but with the
-	// process umask; create the file first so it is never readable by others.
+	// VACUUM INTO writes a consistent copy, WAL included. Create the file
+	// first so it is never readable by others, whatever the umask, and set
+	// the mode again in case SQLite replaced it.
 	f, err := os.OpenFile(to, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}
-	if err = f.Close(); err != nil {
-		return err
+	if err = f.Close(); err == nil {
+		if _, err = db.Exec("VACUUM INTO ?", to); err == nil {
+			err = os.Chmod(to, 0o600)
+		}
 	}
-	if _, err = db.Exec("VACUUM INTO ?", to); err != nil {
+	if err != nil {
 		_ = os.Remove(to)
 		return err
+	}
+	// Pruning is best effort: a stale backup left behind is no reason to
+	// refuse an upgrade that now has a fresh one.
+	all, _ := backups(file)
+	for i := 0; len(all)-i > keepBackups; i++ {
+		if all[i] != to { // a clock set back would sort it first
+			_ = os.Remove(all[i])
+		}
 	}
 	return nil
 }

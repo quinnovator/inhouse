@@ -553,3 +553,44 @@ func TestDowngradeNamesTheNewestBackup(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestFailedBackupKeepsTheOldOnes(t *testing.T) {
+	file := v1(t)
+	for _, stamp := range []string{"20250101T000000.000Z", "20250102T000000.000Z", "20250103T000000.000Z"} {
+		if err := os.WriteFile(file+"."+stamp+".v1.bak", nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A closed connection fails the copy while the directory stays writable.
+	db, err := sql.Open("sqlite", file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+	for range 3 {
+		if err = backup(db, file, 1); err == nil {
+			t.Fatal("backed up through a closed connection")
+		}
+	}
+	if b, _ := backups(file); len(b) != 3 || !strings.Contains(b[0], "20250101") {
+		t.Fatal("failed backups cost old ones", b)
+	}
+}
+
+func TestNewBackupSurvivesBackdatedClock(t *testing.T) {
+	file := v1(t)
+	for _, stamp := range []string{"29990101T000000.000Z", "29990102T000000.000Z", "29990103T000000.000Z"} {
+		if err := os.WriteFile(file+"."+stamp+".v1.bak", nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := Open(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Close()
+	b, _ := backups(file)
+	if len(b) != keepBackups+1 || strings.HasPrefix(filepath.Base(b[0]), "state.db.2999") {
+		t.Fatal("the new backup was pruned", b)
+	}
+}
