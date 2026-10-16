@@ -40,6 +40,7 @@ describe('deployable', () => {
     expect(doc.containers.db.secret_versions).toBeUndefined()
     expect(doc.order).toBeUndefined()
     expect(doc.update_strategy).toBe('recreate')
+    expect(doc.version).toBe(1)
   })
 })
 

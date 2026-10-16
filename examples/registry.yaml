@@ -1,6 +1,7 @@
 # A private image registry (zot) running as an ordinary inhouse service.
 # Push from a laptop:  docker push registry.<tailnet>.ts.net/myapp:1
 # Then deploy specs that use image: registry.<tailnet>.ts.net/myapp:1
+version: 1
 name: registry
 containers:
   zot:

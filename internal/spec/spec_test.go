@@ -71,10 +71,36 @@ func TestRejects(t *testing.T) {
 		"short timeout":       "name: a\ncontainers:\n  web: {image: docker.io/a/b:1, port: 80, health: {timeout: 1s}}\n",
 		"secret clashes env":  "name: a\ncontainers:\n  web: {image: docker.io/a/b:1, port: 80, env: {X: y}, secrets: {X: s}}\n",
 		"tiny memory":         "name: a\ncontainers:\n  web: {image: docker.io/a/b:1, port: 80, resources: {memory: 1Ki}}\n",
+		"newer version":       "version: 2\nname: a\n" + ingress,
+		"version zero":        "version: 0\nname: a\n" + ingress,
+		"version as text":     "version: one\nname: a\n" + ingress,
 	} {
 		if _, err := Parse([]byte(doc)); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+}
+
+func TestVersion(t *testing.T) {
+	bare, err := Parse([]byte(valid))
+	if err != nil || bare.SpecVersion != nil {
+		t.Fatal("a spec without a version should parse as unversioned", bare.SpecVersion, err)
+	}
+	versioned, err := Parse([]byte("version: 1\n" + valid))
+	if err != nil || versioned.SpecVersion == nil || *versioned.SpecVersion != 1 {
+		t.Fatal(versioned.SpecVersion, err)
+	}
+	// Revisions deployed before specs had a version were hashed without one,
+	// so adding version: 1 must not turn a redeploy into a new revision.
+	if bare.Hash() != versioned.Hash() {
+		t.Fatal("version changed the hash")
+	}
+	if _, err = Parse([]byte(`{"version":1,"name":"x","containers":{"a":{"image":"docker.io/a/a:1","port":80}}}`)); err != nil {
+		t.Fatal("JSON spec with a version:", err)
+	}
+	_, err = Parse([]byte("version: 2\n" + valid))
+	if err == nil || !strings.Contains(err.Error(), "upgrade") {
+		t.Fatal("a newer version should ask for an upgrade:", err)
 	}
 }
 

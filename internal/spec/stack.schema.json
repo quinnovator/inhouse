@@ -9,6 +9,10 @@
     "containers"
   ],
   "properties": {
+    "version": {
+      "const": 1,
+      "description": "The spec format. Omitting it reads the spec as version 1, but setting it keeps the spec's meaning fixed as inhouse changes."
+    },
     "name": {
       "type": "string",
       "pattern": "^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$"

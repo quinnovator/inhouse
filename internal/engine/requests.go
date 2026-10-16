@@ -663,5 +663,8 @@ func (e *Engine) Plan(ctx context.Context, raw []byte) (Plan, error) {
 	if s.Expose == spec.ExposeFunnel {
 		out.Warnings = append(out.Warnings, "Funnel makes this service reachable from the public Internet, without tailnet identity.")
 	}
+	if s.SpecVersion == nil {
+		out.Warnings = append(out.Warnings, fmt.Sprintf("The spec has no version, so it is read as version %d. Add version: %d to keep its meaning fixed as inhouse changes.", spec.Version, spec.Version))
+	}
 	return out, nil
 }

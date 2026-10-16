@@ -97,7 +97,7 @@ func run(ctx context.Context, args []string) error {
 	if err := checkURL(*base); err != nil {
 		return err
 	}
-	c := &client{base: strings.TrimRight(*base, "/"), http: &http.Client{
+	c := &client{base: strings.TrimRight(*base, "/"), warn: os.Stderr, http: &http.Client{
 		Timeout:       130 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}}
@@ -258,8 +258,10 @@ func printJSON(v any) error {
 }
 
 type client struct {
-	base string
-	http *http.Client
+	base   string
+	http   *http.Client
+	warn   io.Writer // stderr: notes that must not mix with JSON output
+	warned bool
 }
 
 type operation struct {
@@ -284,6 +286,7 @@ func (c *client) call(ctx context.Context, method, path, key string, body []byte
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
+	c.checkVersion(resp.Header.Get(version.Header))
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
 		return err
@@ -305,6 +308,17 @@ func (c *client) call(ctx context.Context, method, path, key string, body []byte
 		return errors.New(msg)
 	}
 	return json.Unmarshal(raw, out)
+}
+
+// checkVersion warns once when the daemon runs a different version.
+func (c *client) checkVersion(daemon string) {
+	if c.warned {
+		return
+	}
+	c.warned = true
+	if msg := version.Mismatch(daemon); msg != "" {
+		_, _ = fmt.Fprintln(c.warn, "inhouse:", msg)
+	}
 }
 
 func (c *client) show(ctx context.Context, method, path string, argErr error) error {
@@ -332,8 +346,12 @@ func (c *client) deploy(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	if _, err = spec.Parse(body); err != nil {
+	s, err := spec.Parse(body)
+	if err != nil {
 		return err
+	}
+	if s.SpecVersion == nil {
+		_, _ = fmt.Fprintf(c.warn, "inhouse: the spec has no version, so it is read as version %d; add version: %d\n", spec.Version, spec.Version)
 	}
 	return c.operate(ctx, "POST", "/v1/deploy", *key, body, !*noWait)
 }
