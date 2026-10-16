@@ -1,5 +1,6 @@
 # An ephemeral service: deleted automatically, node and all, six hours after
 # its last deploy. The kind of thing an agent deploys to show you a branch.
+version: 1
 name: preview-hello
 ttl: 6h
 containers:

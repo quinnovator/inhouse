@@ -1,6 +1,7 @@
 # A web app and its database in one pod. They share localhost; only the web
 # container's port is published. Set the secret first:
 #   echo -n 'a-long-random-password' | inhouse secrets set notes-db-password
+version: 1
 name: notes
 containers:
   db:

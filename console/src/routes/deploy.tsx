@@ -17,7 +17,8 @@ export const Route = createFileRoute('/deploy')({
   component: Deploy,
 })
 
-const example = `name: hello
+const example = `version: 1
+name: hello
 containers:
   web:
     image: docker.io/traefik/whoami:v1.10

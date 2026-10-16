@@ -5,6 +5,7 @@ agents write the same format; `inhouse schema` prints its JSON Schema, and the
 MCP `deploy` tool uses it as its input schema.
 
 ```yaml
+version: 1                   # the spec format; see Versions below
 name: notes                  # becomes https://notes.<tailnet>.ts.net
 expose: tailnet              # tailnet (default) | funnel
 ttl: 6h                      # optional: makes the service ephemeral
@@ -39,6 +40,7 @@ More in [`examples/`](../examples).
 
 | Field | Required | Meaning |
 | --- | --- | --- |
+| `version` | no | The spec format, `1`. Without it the spec is read as version 1, and `plan` and `inhouse deploy` say so. See [Versions](#versions). |
 | `name` | yes | 1–40 lowercase letters, digits or hyphens; starts and ends with a letter or digit. Becomes the hostname. `deploy` is reserved for the control node. |
 | `expose` | no | `tailnet`: only your tailnet can reach it. `funnel`: also the public Internet, through Tailscale Funnel, without identity headers. Fixed once deployed. |
 | `ttl` | no | A duration from `1s` to `720h`. The service is **ephemeral**: it is deleted automatically, node and volumes included, that long after its last successful deploy. Ephemeral services cannot use Funnel. Whether a service is ephemeral is fixed once deployed. |
@@ -85,3 +87,23 @@ The stored revision is your spec plus defaults, with every image pinned to an
 exact digest and every secret pinned to an exact version. `get_service`
 returns it in full. Deploying a spec that pins to the same result as the live
 revision changes nothing and reports the live revision.
+
+## Versions
+
+`version` names the format a spec is written in, so a spec keeps meaning the
+same thing as inhouse changes. This page describes version 1, the only one
+so far.
+
+Changes to the format either only add optional fields, which every spec
+written before them keeps working without, or come with a new version. A
+daemon that reads a new version still accepts every older one, so specs you
+have already written keep deploying after an upgrade.
+
+A spec with a newer `version` than the daemon reads is refused with a
+message to upgrade it. The CLI, including `inhouse mcp-stdio` and
+`mcp-agent`, warns on stderr when it and the daemon are different versions;
+upgrade whichever is older.
+
+The version describes the document, not the service: it is not part of the
+stored revision, and adding `version: 1` to a spec that was deployed without
+one changes nothing.

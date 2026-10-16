@@ -355,9 +355,31 @@ func TestIdempotencyAndNoop(t *testing.T) {
 	if noop.State != store.Succeeded || noop.Rev != first.Rev {
 		t.Fatalf("%+v", noop)
 	}
+	// So is adding version: 1 to a spec deployed without one.
+	versioned := h.deploy(t, append([]byte("version: 1\n"), stack("hello", "docker.io/traefik/whoami:1", "")...), "versioned")
+	if versioned.State != store.Succeeded || versioned.Rev != first.Rev {
+		t.Fatalf("%+v", versioned)
+	}
 	revs, _ := h.db.Revisions(context.Background(), "hello")
 	if len(revs) != 1 {
 		t.Fatalf("no-op left %d revisions", len(revs))
+	}
+}
+
+func TestPlanWarnsAboutAMissingVersion(t *testing.T) {
+	h := setup(t)
+	warned := func(raw []byte) bool {
+		p, err := h.Plan(admin(), raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Contains(strings.Join(p.Warnings, " "), "no version")
+	}
+	if !warned(stack("hello", "docker.io/traefik/whoami:1", "")) {
+		t.Fatal("no warning for a spec without a version")
+	}
+	if warned(stack("hello", "docker.io/traefik/whoami:1", "version: 1\n")) {
+		t.Fatal("warned about a versioned spec")
 	}
 }
 
