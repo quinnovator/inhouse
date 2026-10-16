@@ -18,6 +18,19 @@ jobs:
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version-file: go.mod
+      - name: Every earlier release has an upgrade fixture
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          missing=0
+          for tag in $(git tag --list 'v*' --merged "$TAG^"); do
+            [[ $tag == *-* ]] && continue   # pre-releases aren't upgraded from
+            if [[ ! -f internal/engine/testdata/upgrade/$tag/inhouse.db ]]; then
+              echo "::error::no upgrade fixture for $tag; run scripts/upgrade-fixture.sh $tag"
+              missing=1
+            fi
+          done
+          exit $missing
       - run: go test ./...
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
