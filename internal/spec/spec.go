@@ -115,6 +115,10 @@ func Parse(raw []byte) (Stack, error) {
 	}
 	root := doc.Content[0]
 	for i := 0; i+1 < len(root.Content); i += 2 {
+		// A null version decodes like a missing one; only omitting it means 1.
+		if root.Content[i].Value == "version" && root.Content[i+1].Tag == "!!null" {
+			return s, fmt.Errorf("version: expected %d", Version)
+		}
 		if root.Content[i].Value != "containers" {
 			continue
 		}

@@ -74,6 +74,8 @@ func TestRejects(t *testing.T) {
 		"newer version":       "version: 2\nname: a\n" + ingress,
 		"version zero":        "version: 0\nname: a\n" + ingress,
 		"version as text":     "version: one\nname: a\n" + ingress,
+		"null version":        "version: null\nname: a\n" + ingress,
+		"empty version":       "version:\nname: a\n" + ingress,
 	} {
 		if _, err := Parse([]byte(doc)); err == nil {
 			t.Errorf("%s: accepted", name)
@@ -97,6 +99,9 @@ func TestVersion(t *testing.T) {
 	}
 	if _, err = Parse([]byte(`{"version":1,"name":"x","containers":{"a":{"image":"docker.io/a/a:1","port":80}}}`)); err != nil {
 		t.Fatal("JSON spec with a version:", err)
+	}
+	if _, err = Parse([]byte(`{"version":null,"name":"x","containers":{"a":{"image":"docker.io/a/a:1","port":80}}}`)); err == nil {
+		t.Fatal("JSON spec with a null version was accepted")
 	}
 	_, err = Parse([]byte("version: 2\n" + valid))
 	if err == nil || !strings.Contains(err.Error(), "upgrade") {
