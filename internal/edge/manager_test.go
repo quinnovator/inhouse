@@ -6,9 +6,11 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -22,6 +24,25 @@ import (
 	"tailscale.com/tstest/integration/testcontrol"
 	"tailscale.com/types/logger"
 )
+
+// revision is web's revision whose ingress publishes on port, with ports
+// mapping each raw listener it declares to its loopback port.
+func revision(t *testing.T, port int, ports map[string]int) store.Revision {
+	t.Helper()
+	doc := "name: web\ncontainers:\n  web:\n    image: docker.io/a/b:1\n    port: 80\n"
+	if len(ports) > 0 {
+		doc += "    ports:\n"
+		for key := range ports {
+			protocol, number, _ := strings.Cut(key, "/")
+			doc += "      - {port: " + number + ", protocol: " + protocol + "}\n"
+		}
+	}
+	s, err := spec.Parse([]byte(doc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store.Revision{Service: "web", Rev: port, Spec: s, Hash: s.Hash(), Port: port, Ports: ports}
+}
 
 // TestStoppedListenerComesBack runs real nodes against Tailscale's
 // in-process test control server, serving plain HTTP since it issues no
@@ -61,7 +82,9 @@ func TestStoppedListenerComesBack(t *testing.T) {
 	if _, err := m.Ensure(ctx, "web", store.Persistent, spec.ExposeTailnet); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.Switch("web", port); err != nil {
+	echo := newUDPEcho(t, "live revision")
+	live := revision(t, port, map[string]int{"udp/5000": echo.port()})
+	if err := m.Switch(live); err != nil {
 		t.Fatal(err)
 	}
 
@@ -89,6 +112,17 @@ func TestStoppedListenerComesBack(t *testing.T) {
 		if resp.StatusCode != 200 || string(body) != "live revision" {
 			t.Fatalf("HTTP %d %q", resp.StatusCode, body)
 		}
+		// Raw ports follow the node too.
+		callerIP, _ := caller.Server.TailscaleIPs()
+		pc, err := caller.Server.ListenPacket("udp", netip.AddrPortFrom(callerIP, 0).String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = pc.Close() }()
+		to := net.UDPAddrFromAddrPort(netip.AddrPortFrom(ip, 5000))
+		if got, err := askUDP(ctx, pc, to, "ping", 40); err != nil || got != "live revision: ping" {
+			t.Fatal(got, err)
+		}
 	}
 	waitStopped := func() {
 		t.Helper()
@@ -107,7 +141,7 @@ func TestStoppedListenerComesBack(t *testing.T) {
 		if err := m.Stopped("web"); err != nil {
 			t.Fatal(err)
 		}
-		if err := m.Switch("web", port); err != nil {
+		if err := m.Switch(live); err != nil {
 			t.Fatal(err)
 		}
 	}

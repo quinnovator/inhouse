@@ -11,7 +11,7 @@ import { actor, ago, exact, health, image, plural, revTone, safeURL, until } fro
 import { useService } from '~/lib/queries'
 import { deployable, eligible, hasSecrets, order, shown } from '~/lib/spec'
 import { toast, useNow } from '~/lib/stores'
-import type { Container, Revision, ServiceDetail, Stack } from '~/lib/types'
+import type { Container, Port, Revision, Route as StackRoute, ServiceDetail, Stack } from '~/lib/types'
 
 export const Route = createFileRoute('/services/$name')({
   head: ({ params }) => ({ meta: [{ title: `${params.name} · inhouse` }] }),
@@ -101,7 +101,9 @@ function Loaded({ detail, open }: { detail: ServiceDetail; open: (d: Dialog) => 
           <div className="row">
             <h1>{svc.name}</h1>
             <Pill tone={state.tone}>{state.label}</Pill>
-            <span className="sub">{[svc.kind, spec?.expose, spec?.update_strategy].filter(Boolean).join(' · ')}</span>
+            <span className="sub">
+              {[svc.kind, spec?.expose, spec?.update_strategy, spec?.drain && `drain ${spec.drain}`].filter(Boolean).join(' · ')}
+            </span>
           </div>
           {url ? (
             <a className="mono" href={url} target="_blank" rel="noopener noreferrer">
@@ -258,7 +260,7 @@ function Loaded({ detail, open }: { detail: ServiceDetail; open: (d: Dialog) => 
               {spec ? (
                 <div className="containers">
                   {order(spec).map((n) => (
-                    <ContainerCard key={n} name={n} c={spec.containers[n]!} />
+                    <ContainerCard key={n} name={n} c={spec.containers[n]!} routes={(spec.routes ?? []).filter((r) => r.container === n)} />
                   ))}
                 </div>
               ) : (
@@ -401,14 +403,14 @@ function Pairs({ entries, sep }: { entries: [string, string][]; sep: string }) {
   )
 }
 
-function ContainerCard({ name, c }: { name: string; c: Container }) {
+function ContainerCard({ name, c, routes }: { name: string; c: Container; routes: StackRoute[] }) {
   const img = image(c.image)
   const cmd = [...(c.command ?? []), ...(c.args ?? [])]
   return (
     <div className="ctr">
       <div className="ctr-head">
         <strong>{name}</strong>
-        <span className="tag">{c.port ? `ingress :${c.port}` : 'sidecar'}</span>
+        <span className="tag">{c.port ? `ingress :${c.port}${c.protocol === 'h2c' ? ' · h2c' : ''}` : 'sidecar'}</span>
         <span className="image">
           {img.name}
           {img.digest && <span className="digest"> @sha256:{img.digest}…</span>}
@@ -435,9 +437,24 @@ function ContainerCard({ name, c }: { name: string; c: Container }) {
         <Item label="Volumes">
           <Pairs entries={Object.entries(c.volumes ?? {})} sep=" → " />
         </Item>
+        {routes.length > 0 && (
+          <Item label="Routes">
+            <Pairs entries={routes.map((r) => [r.path, `:${r.port}${r.protocol === 'h2c' ? ' (h2c)' : ''}`])} sep=" → " />
+          </Item>
+        )}
+        {(c.ports?.length ?? 0) > 0 && (
+          <Item label="Tailnet ports">
+            <span className="mono">{c.ports!.map(portLabel).join(', ')}</span>
+          </Item>
+        )}
       </div>
     </div>
   )
+}
+
+function portLabel(p: Port) {
+  const count = p.count ?? 1
+  return count > 1 ? `${p.protocol}/${p.port}–${p.port + count - 1}` : `${p.protocol}/${p.port}`
 }
 
 function Item({ label, children }: { label: string; children: ReactNode }) {

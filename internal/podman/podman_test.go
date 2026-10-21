@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/quinnovator/inhouse/internal/spec"
 	"github.com/quinnovator/inhouse/internal/store"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -29,7 +30,8 @@ func TestRefusesUnownedPodBeforeAnyMutation(t *testing.T) {
 	p := &Podman{client: &http.Client{Transport: rewriteTransport{server.URL, http.DefaultTransport}}}
 	p.Offset = func(context.Context, string) (int, error) { return 1, nil }
 	r := store.Revision{Service: "hello", Rev: 1, Hash: "abc"}
-	for _, action := range []func(context.Context, store.Revision) error{p.Up, p.Stop, p.Remove} {
+	up := func(ctx context.Context, r store.Revision) error { return p.Up(ctx, r, nil) }
+	for _, action := range []func(context.Context, store.Revision) error{up, p.Stop, p.Remove} {
 		if e := action(context.Background(), r); e == nil {
 			t.Fatal("accepted mismatched labels")
 		}
@@ -109,8 +111,9 @@ func TestPodmanIntegration(t *testing.T) {
 containers:
   sleeper:
     image: docker.io/library/alpine:3.22
-    command: ["sleep"]
-    args: ["300"]
+    command: ["sh", "-c"]
+    args: ["echo service=$INHOUSE_SERVICE; while :; do nc -u -l -p 5000 -e cat; done"]
+    ports: [{port: 5000, protocol: udp}]
     health: {command: ["true"]}
   web:
     image: docker.io/traefik/whoami@sha256:200689790a0a0ea48ca45992e0450bc26ccab5307375b41c84dfc4f2475937ab
@@ -128,7 +131,7 @@ containers:
 		}
 		s.Containers[n] = c
 	}
-	r := store.Revision{Service: s.Name, Rev: 1, Spec: s, Hash: s.Hash(), Port: 29998}
+	r := store.Revision{Service: s.Name, Rev: 1, Spec: s, Hash: s.Hash(), Port: 29998, Ports: map[string]int{"udp/5000": 29997}}
 	defer func() {
 		cleanup, stop := context.WithTimeout(context.Background(), 20*time.Second)
 		defer stop()
@@ -136,10 +139,10 @@ containers:
 			t.Errorf("cleanup: %v", e)
 		}
 	}()
-	if e = p.Up(ctx, r); e != nil {
+	if e = p.Up(ctx, r, map[string]string{"INHOUSE_SERVICE": s.Name}); e != nil {
 		t.Fatal(e)
 	}
-	if e = p.Up(ctx, r); e != nil {
+	if e = p.Up(ctx, r, nil); e != nil {
 		t.Fatalf("idempotent up: %v", e)
 	}
 	online, e := p.Running(ctx, r)
@@ -153,6 +156,28 @@ containers:
 	}
 	if _, e = p.Logs(ctx, r, "web", 20); e != nil {
 		t.Fatal(e)
+	}
+	if logs, e := p.Logs(ctx, r, "sleeper", 20); e != nil || !strings.Contains(logs, "service="+s.Name) {
+		t.Fatalf("platform env did not reach the container: %q %v", logs, e)
+	}
+	// The raw UDP port is published on its own loopback host port.
+	conn, e := net.Dial("udp4", "127.0.0.1:29997")
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer func() { _ = conn.Close() }()
+	echoed := ""
+	for range 30 {
+		_, _ = conn.Write([]byte("ping"))
+		_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+		buf := make([]byte, 64)
+		if n, err := conn.Read(buf); err == nil {
+			echoed = string(buf[:n])
+			break
+		}
+	}
+	if echoed != "ping" {
+		t.Fatalf("UDP port answered %q", echoed)
 	}
 	objects, e := p.Pods(ctx)
 	if e != nil {
@@ -170,7 +195,7 @@ containers:
 	if e = p.Stop(ctx, r); e != nil {
 		t.Fatal(e)
 	}
-	if e = p.Up(ctx, r); e != nil {
+	if e = p.Up(ctx, r, nil); e != nil {
 		t.Fatalf("restore stopped pod: %v", e)
 	}
 }

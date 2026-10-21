@@ -33,11 +33,26 @@ const (
 
 	Rolling  = "rolling"
 	Recreate = "recreate"
+
+	// ProtocolHTTP (the default, written as "") and ProtocolH2C are what an
+	// HTTP upstream speaks: HTTP/1.1, or HTTP/2 without TLS, which gRPC needs.
+	ProtocolHTTP = "http"
+	ProtocolH2C  = "h2c"
+
+	TCP = "tcp"
+	UDP = "udp"
+
+	// MaxListeners bounds the raw ports a stack publishes, counting each port
+	// of a range.
+	MaxListeners = 64
+	// MaxDrain bounds how long a replaced revision keeps its connections.
+	MaxDrain = 24 * time.Hour
 )
 
 var (
 	nameRE   = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$`)
 	envRE    = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	routeRE  = regexp.MustCompile(`^(/[A-Za-z0-9._~-]+)+$`)
 	digestRE = regexp.MustCompile(`^.+@sha256:[a-f0-9]{64}$`)
 )
 
@@ -53,20 +68,31 @@ type Stack struct {
 	// gave none and was read as version 1. It describes the document, not the
 	// stack, so it is never stored or hashed: adding it to a spec leaves a
 	// redeploy a no-op.
-	SpecVersion    *int                 `json:"-" yaml:"version"`
-	Name           string               `json:"name" yaml:"name"`
-	Expose         string               `json:"expose" yaml:"expose"`
-	TTL            *string              `json:"ttl,omitempty" yaml:"ttl"`
-	UpdateStrategy string               `json:"update_strategy,omitempty" yaml:"update_strategy"`
-	Containers     map[string]Container `json:"containers" yaml:"containers"`
+	SpecVersion    *int    `json:"-" yaml:"version"`
+	Name           string  `json:"name" yaml:"name"`
+	Expose         string  `json:"expose" yaml:"expose"`
+	TTL            *string `json:"ttl,omitempty" yaml:"ttl"`
+	UpdateStrategy string  `json:"update_strategy,omitempty" yaml:"update_strategy"`
+	// Drain is how long a replaced revision keeps serving the connections it
+	// already has. Empty uses the daemon's default.
+	Drain string `json:"drain,omitempty" yaml:"drain"`
+	// Routes send HTTP requests under a path to a container other than the
+	// ingress, on the same HTTPS address.
+	Routes     []Route              `json:"routes,omitempty" yaml:"routes"`
+	Containers map[string]Container `json:"containers" yaml:"containers"`
 	// Order is the containers' document order. YAML maps are unordered in Go,
 	// so Parse records it from the document itself.
 	Order []string `json:"order" yaml:"-"`
 }
 
 type Container struct {
-	Image     string            `json:"image" yaml:"image"`
-	Port      int               `json:"port,omitempty" yaml:"port"`
+	Image string `json:"image" yaml:"image"`
+	Port  int    `json:"port,omitempty" yaml:"port"`
+	// Protocol is what the ingress speaks on Port: "" (HTTP/1.1) or h2c.
+	Protocol string `json:"protocol,omitempty" yaml:"protocol"`
+	// Ports are raw TCP or UDP ports served on the service's tailnet
+	// addresses, beside its HTTPS address.
+	Ports     []Port            `json:"ports,omitempty" yaml:"ports"`
 	Command   []string          `json:"command,omitempty" yaml:"command"`
 	Args      []string          `json:"args,omitempty" yaml:"args"`
 	Env       map[string]string `json:"env,omitempty" yaml:"env"`
@@ -78,6 +104,35 @@ type Container struct {
 	// ciphertext a revision was created with. It is set by the platform.
 	SecretVersions map[string]string `json:"secret_versions,omitempty" yaml:"-"`
 }
+
+// Route serves HTTP requests whose path is Path, or below it, from Port.
+// The path reaches the container unchanged.
+type Route struct {
+	Path      string `json:"path" yaml:"path"`
+	Container string `json:"container" yaml:"container"`
+	Port      int    `json:"port" yaml:"port"`
+	Protocol  string `json:"protocol,omitempty" yaml:"protocol"`
+}
+
+// Port publishes Count consecutive raw ports from Port (one when Count is
+// 0) on the service's tailnet addresses, each to the same port in the pod.
+type Port struct {
+	Port     int    `json:"port" yaml:"port"`
+	Protocol string `json:"protocol" yaml:"protocol"`
+	Count    int    `json:"count,omitempty" yaml:"count"`
+}
+
+// Listener is one raw port a stack publishes.
+type Listener struct {
+	Protocol string
+	Port     int
+}
+
+// Key names the listener's host port in a revision.
+func (l Listener) Key() string { return l.Protocol + "/" + strconv.Itoa(l.Port) }
+
+// RouteKey names the host port of a routed container port in a revision.
+func RouteKey(port int) string { return "http/" + strconv.Itoa(port) }
 
 type Health struct {
 	Path    string   `json:"path,omitempty" yaml:"path"`
@@ -198,6 +253,14 @@ func (s *Stack) Validate() error {
 	if hasVolumes && s.UpdateStrategy != Recreate {
 		return errors.New("update_strategy: stacks with volumes must use recreate, so two revisions never write the same data")
 	}
+	if s.Drain != "" {
+		if d, err := time.ParseDuration(s.Drain); err != nil || d < time.Second || d > MaxDrain {
+			return errors.New("drain: expected a duration from 1s to 24h")
+		}
+	}
+	if err := s.validatePorts(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -209,6 +272,33 @@ func (c *Container) validate(name string) error {
 	}
 	if c.Port < 0 || c.Port > 65535 {
 		return fmt.Errorf("%s: expected 1–65535", field("port"))
+	}
+	switch c.Protocol {
+	case ProtocolHTTP:
+		c.Protocol = "" // the default, so writing it changes nothing
+	case "", ProtocolH2C:
+	default:
+		return fmt.Errorf("%s: expected http or h2c", field("protocol"))
+	}
+	if c.Protocol != "" && c.Port == 0 {
+		return fmt.Errorf("%s: applies only to the ingress", field("protocol"))
+	}
+	if len(c.Ports) > 32 {
+		return fmt.Errorf("%s: at most 32 entries", field("ports"))
+	}
+	for i, p := range c.Ports {
+		if p.Protocol != TCP && p.Protocol != UDP {
+			return fmt.Errorf("%s[%d].protocol: expected tcp or udp", field("ports"), i)
+		}
+		if p.Count < 0 || p.Count > MaxListeners {
+			return fmt.Errorf("%s[%d].count: expected 1–%d", field("ports"), i, MaxListeners)
+		}
+		if p.Count == 1 {
+			c.Ports[i].Count = 0
+		}
+		if p.Port < 1 || p.Port+max(p.Count, 1)-1 > 65535 {
+			return fmt.Errorf("%s[%d].port: expected ports within 1–65535", field("ports"), i)
+		}
 	}
 	if len(c.Env) > 128 {
 		return fmt.Errorf("%s: at most 128 entries", field("env"))
@@ -271,6 +361,100 @@ func (c *Container) validate(name string) error {
 		}
 	}
 	return nil
+}
+
+// validatePorts checks routes and raw ports against each other. Containers
+// share one network namespace, so a port number belongs to the pod,
+// whichever container listens on it.
+func (s *Stack) validatePorts() error {
+	_, ingress := s.Ingress()
+	if len(s.Routes) > 16 {
+		return errors.New("routes: at most 16 entries")
+	}
+	paths := map[string]bool{}
+	protocols := map[int]string{}
+	for i := range s.Routes {
+		r := &s.Routes[i]
+		field := func(f string) string { return fmt.Sprintf("routes[%d].%s", i, f) }
+		if len(r.Path) > 256 || !routeRE.MatchString(r.Path) || path.Clean(r.Path) != r.Path || paths[r.Path] {
+			return fmt.Errorf("%s: expected a distinct path such as /rtc, without a trailing slash", field("path"))
+		}
+		paths[r.Path] = true
+		if _, ok := s.Containers[r.Container]; !ok {
+			return fmt.Errorf("%s: no container named %q", field("container"), r.Container)
+		}
+		if r.Port < 1 || r.Port > 65535 || r.Port == ingress.Port {
+			return fmt.Errorf("%s: expected 1–65535, other than the ingress port", field("port"))
+		}
+		switch r.Protocol {
+		case ProtocolHTTP:
+			r.Protocol = ""
+		case "", ProtocolH2C:
+		default:
+			return fmt.Errorf("%s: expected http or h2c", field("protocol"))
+		}
+		if p, seen := protocols[r.Port]; seen && p != r.Protocol {
+			return fmt.Errorf("%s: routes to port %d must use one protocol", field("protocol"), r.Port)
+		}
+		protocols[r.Port] = r.Protocol
+	}
+	seen := map[string]bool{}
+	for _, l := range s.Listeners() {
+		if seen[l.Key()] {
+			return fmt.Errorf("ports: %s is published twice", l.Key())
+		}
+		seen[l.Key()] = true
+		if l.Protocol != TCP {
+			continue
+		}
+		if l.Port == 443 {
+			return errors.New("ports: tcp/443 is the service's HTTPS address")
+		}
+		if _, routed := protocols[l.Port]; routed || l.Port == ingress.Port {
+			return fmt.Errorf("ports: tcp/%d is already served over HTTPS", l.Port)
+		}
+	}
+	if len(seen) > MaxListeners {
+		return fmt.Errorf("ports: at most %d ports in all, counting each port of a range", MaxListeners)
+	}
+	return nil
+}
+
+// Listeners lists every raw port the stack publishes, ranges expanded, in
+// document order.
+func (s Stack) Listeners() []Listener {
+	out := []Listener{}
+	for _, n := range s.Order {
+		for _, p := range s.Containers[n].Ports {
+			for i := range max(p.Count, 1) {
+				out = append(out, Listener{p.Protocol, p.Port + i})
+			}
+		}
+	}
+	return out
+}
+
+// HostPorts names every loopback port a revision publishes besides its
+// ingress: one per routed port, then one per listener.
+func (s Stack) HostPorts() []string {
+	out := []string{}
+	seen := map[string]bool{}
+	for _, r := range s.Routes {
+		if k := RouteKey(r.Port); !seen[k] {
+			seen[k] = true
+			out = append(out, k)
+		}
+	}
+	for _, l := range s.Listeners() {
+		out = append(out, l.Key())
+	}
+	return out
+}
+
+// DrainDuration returns the stack's drain, or zero for the daemon default.
+func (s Stack) DrainDuration() time.Duration {
+	d, _ := time.ParseDuration(s.Drain)
+	return d
 }
 
 // Memory parses a quantity such as 512Mi, 1G or 1048576 into bytes.
