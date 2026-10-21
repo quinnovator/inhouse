@@ -56,7 +56,7 @@ func run() error {
 	lifecycleID := flag.String("lifecycle-client-id", "", "OAuth client ID that deletes service devices")
 	lifecycleSecret := flag.String("lifecycle-secret-file", credentialFile("lifecycle-secret"), "file holding the lifecycle client's secret")
 	flag.StringVar(&cfg.ControlName, "control-hostname", cfg.ControlName, "hostname of the control node")
-	ports := flag.String("port-range", fmt.Sprintf("%d-%d", cfg.PortLow, cfg.PortHigh), "loopback ports pods publish their ingress on")
+	ports := flag.String("port-range", fmt.Sprintf("%d-%d", cfg.PortLow, cfg.PortHigh), "loopback ports pods publish their ingress, routed and raw ports on")
 	subidBase := flag.Int("subid-base", 1000000, "first subordinate ID of the inhouse user (see /etc/subuid)")
 	subidCount := flag.Int("subid-count", 4194304, "number of subordinate IDs the inhouse user owns")
 	flag.DurationVar(&cfg.PullTimeout, "pull-timeout", cfg.PullTimeout, "how long pulling each image may take")

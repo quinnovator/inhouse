@@ -43,7 +43,6 @@ need in [Discussions](https://github.com/quinnovator/inhouse/discussions).
 Not committed. If you need one of these, say so in Discussions.
 
 - Headscale as the control server
-- TCP services and more than one port per service
 - Scheduled jobs
 - Rotating the age key
 

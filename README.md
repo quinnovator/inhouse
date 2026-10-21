@@ -52,6 +52,11 @@ can read that service.
 - **One node per service.** Every service is its own tailnet device with its
   own HTTPS name and policy tag. Apps receive trustworthy
   `Tailscale-User-Login` headers, so private apps need no login code.
+- **Real-time ready.** HTTP/2 and gRPC, WebSockets, server-sent events, path
+  routes to sidecars, and raw TCP and UDP ports on the service's own tailnet
+  address, so WebRTC servers such as LiveKit run without STUN or TURN
+  ([example](examples/livekit.yaml)). Long-lived calls and streams keep
+  their revision through a deploy for as long as the stack's `drain`.
 - **Safe deploys.** Images are pinned to digests, new revisions take traffic
   only after passing health checks, and cutover is an atomic swap with no
   dropped requests. A failed deploy leaves the live revision untouched.
@@ -153,7 +158,8 @@ for your own app ([stack spec](docs/stack-spec.md),
 
 - One host. No clustering, no multi-tenancy, and no sandbox for untrusted
   code beyond rootless containers with per-service user namespaces.
-- HTTP(S) services only, one ingress port per service.
+- One HTTPS address per service. Raw TCP and UDP ports are reachable from
+  the tailnet only, never through Funnel, and carry no identity headers.
 - All tailnet listeners share the daemon process: restarting `inhoused`
   briefly interrupts HTTPS for every service (containers keep running).
 - Services with volumes update by stopping the old revision first, so they

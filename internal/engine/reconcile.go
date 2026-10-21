@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
 	"time"
 
 	"github.com/quinnovator/inhouse/internal/spec"
@@ -382,13 +383,37 @@ func (e *Engine) revive(ctx context.Context, r store.Revision) error {
 			return fmt.Errorf("registry no longer serves pinned image %s", image)
 		}
 	}
-	if err := e.runtime.Up(ctx, r); err != nil {
+	env, err := e.platformEnv(ctx, r)
+	if err != nil {
 		return err
 	}
-	if err := e.health(ctx, r, time.Now()); err != nil {
+	if err = e.runtime.Up(ctx, r, env); err != nil {
+		return err
+	}
+	if err = e.health(ctx, r, time.Now()); err != nil {
 		return err
 	}
 	return e.serve(ctx, r)
+}
+
+// platformEnv tells r's containers about their own service: where callers
+// reach it, and the tailnet addresses its raw ports listen on, which a
+// WebRTC server advertises as its ICE candidates. It starts the service's
+// node if needed.
+func (e *Engine) platformEnv(ctx context.Context, r store.Revision) (map[string]string, error) {
+	dns, err := e.edges.Ensure(ctx, r.Service, store.KindOf(r.Spec), r.Spec.Expose)
+	if err != nil {
+		return nil, err
+	}
+	ip4, ip6 := e.edges.Addrs(r.Service)
+	return map[string]string{
+		"INHOUSE_SERVICE":      r.Service,
+		"INHOUSE_REVISION":     strconv.Itoa(r.Rev),
+		"INHOUSE_DNS_NAME":     dns,
+		"INHOUSE_URL":          "https://" + dns,
+		"INHOUSE_TAILNET_IPV4": ip4,
+		"INHOUSE_TAILNET_IPV6": ip6,
+	}, nil
 }
 
 // halt keeps a stopped service's live revision stopped and completes the
@@ -453,7 +478,7 @@ func (e *Engine) serve(ctx context.Context, r store.Revision) error {
 	if err = e.store.SetDNS(ctx, r.Service, dns); err != nil {
 		return err
 	}
-	return e.edges.Switch(r.Service, r.Port)
+	return e.edges.Switch(r)
 }
 
 // candidateFailure fails the operation; any other error is retried next pass.
@@ -593,7 +618,11 @@ func (e *Engine) start(ctx context.Context, o store.Operation, r store.Revision)
 	if err = e.volumes.Snapshot(ctx, r); err != nil {
 		return failed(err)
 	}
-	if err = e.runtime.Up(ctx, r); err != nil {
+	env, err := e.platformEnv(ctx, r)
+	if err != nil {
+		return failed(err)
+	}
+	if err = e.runtime.Up(ctx, r, env); err != nil {
 		return failed(err)
 	}
 	if err = e.store.StartHealth(ctx, r); err != nil {
@@ -605,10 +634,19 @@ func (e *Engine) start(ctx context.Context, o store.Operation, r store.Revision)
 	if err = e.health(ctx, r, time.Unix(r.HealthStarted, 0)); err != nil {
 		return failed(err)
 	}
-	if err = e.store.Cutover(ctx, r, e.cfg.Drain); err != nil {
+	if err = e.store.Cutover(ctx, r, e.drain(r)); err != nil {
 		return err
 	}
-	return e.edges.Switch(r.Service, r.Port)
+	return e.edges.Switch(r)
+}
+
+// drain is how long the revision r replaces keeps serving what it has open.
+// A recreate update stopped it already, so the stack's drain doesn't apply.
+func (e *Engine) drain(r store.Revision) time.Duration {
+	if d := r.Spec.DrainDuration(); d > 0 && r.Spec.UpdateStrategy == spec.Rolling {
+		return d
+	}
+	return e.cfg.Drain
 }
 
 // fail stops the candidate, keeps its last log lines as an event and fails
@@ -687,6 +725,8 @@ func (e *Engine) check(ctx context.Context, r store.Revision) error {
 
 // cleanup stops revisions whose drain window ended, removes stopped pods and
 // releases their ports, and removes failed revisions after FailedRetention.
+// A drain ending within Interval is waited for; a longer one is left to a
+// later pass, so a deploy doesn't wait out its predecessor's drain.
 func (e *Engine) cleanup(ctx context.Context, name string) error {
 	svc, err := e.store.Service(ctx, name)
 	if err != nil {
@@ -702,7 +742,11 @@ func (e *Engine) cleanup(ctx context.Context, name string) error {
 		}
 		switch r.State {
 		case store.Draining:
-			if wait := time.Until(time.Unix(r.DrainUntil, 0)); wait > 0 {
+			wait := time.Until(time.Unix(r.DrainUntil, 0))
+			if wait > e.cfg.Interval {
+				continue
+			}
+			if wait > 0 {
 				select {
 				case <-ctx.Done():
 					return ctx.Err()
@@ -717,10 +761,7 @@ func (e *Engine) cleanup(ctx context.Context, name string) error {
 			}
 			fallthrough
 		case store.Stopped:
-			if err = e.runtime.Remove(ctx, r); err != nil {
-				return err
-			}
-			if err = e.store.ReleasePort(ctx, r); err != nil {
+			if err = e.removeRevision(ctx, r); err != nil {
 				return err
 			}
 		case store.Failed:
@@ -728,16 +769,23 @@ func (e *Engine) cleanup(ctx context.Context, name string) error {
 				return err
 			}
 			if time.Since(time.Unix(r.Finished, 0)) >= e.cfg.FailedRetention {
-				if err = e.runtime.Remove(ctx, r); err != nil {
-					return err
-				}
-				if err = e.store.ReleasePort(ctx, r); err != nil {
+				if err = e.removeRevision(ctx, r); err != nil {
 					return err
 				}
 			}
 		}
 	}
 	return nil
+}
+
+// removeRevision removes a stopped revision's pod and frees its ports, after
+// closing any raw connections the edge still holds to them.
+func (e *Engine) removeRevision(ctx context.Context, r store.Revision) error {
+	if err := e.runtime.Remove(ctx, r); err != nil {
+		return err
+	}
+	e.edges.Retire(r.Service, r.Port)
+	return e.store.ReleasePort(ctx, r)
 }
 
 // removeOrphans deletes labelled pods with no revision in the database, once
@@ -783,10 +831,7 @@ func (e *Engine) teardown(ctx context.Context, svc store.Service) error {
 		if err = e.runtime.Stop(ctx, r); err != nil {
 			return err
 		}
-		if err = e.runtime.Remove(ctx, r); err != nil {
-			return err
-		}
-		if err = e.store.ReleasePort(ctx, r); err != nil {
+		if err = e.removeRevision(ctx, r); err != nil {
 			return err
 		}
 	}

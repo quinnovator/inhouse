@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,9 +20,11 @@ import (
 	"github.com/quinnovator/inhouse/internal/store"
 	"github.com/quinnovator/inhouse/internal/tailnet"
 	"tailscale.com/ipn"
+	"tailscale.com/tsnet"
 )
 
-// Manager runs one tailnet node and HTTPS listener per service.
+// Manager runs one tailnet node and HTTPS listener per service, plus the
+// raw TCP and UDP ports its live revision publishes.
 type Manager struct {
 	StateDir  string // one subdirectory per node
 	Enroll    tailnet.Credential
@@ -43,8 +46,9 @@ type managed struct {
 	expose string
 
 	// Guarded by Manager.mu.
-	port    int
-	stopped error // why the listener stopped serving; nil while it serves
+	port    int                    // the live revision's ingress host port; 0 when cleared
+	raw     map[string]rawListener // by spec.Listener key
+	stopped error                  // why the listener stopped serving; nil while it serves
 }
 
 func NewManager(stateDir string, enroll, lifecycle tailnet.Credential) *Manager {
@@ -56,12 +60,33 @@ func NewManager(stateDir string, enroll, lifecycle tailnet.Credential) *Manager 
 		})
 	}
 	m.listen = func(n *tailnet.Node, expose string) (net.Listener, error) {
+		conf := tlsConfig(n.Client.GetCertificate)
 		if expose == spec.ExposeFunnel {
-			return n.Server.ListenFunnel("tcp", ":443")
+			return n.Server.ListenFunnel("tcp", ":443", tsnet.FunnelTLSConfig(conf))
 		}
-		return n.Server.ListenTLS("tcp", ":443")
+		ln, err := n.Server.Listen("tcp", ":443")
+		if err != nil {
+			return nil, err
+		}
+		return tls.NewListener(ln, conf), nil
 	}
 	return m
+}
+
+// tlsConfig offers HTTP/2 beside HTTP/1.1. tsnet's ListenTLS offers neither,
+// so every client would fall back to HTTP/1.1.
+func tlsConfig(getCert func(*tls.ClientHelloInfo) (*tls.Certificate, error)) *tls.Config {
+	return &tls.Config{GetCertificate: getCert, NextProtos: []string{"h2", "http/1.1"}}
+}
+
+// newServer serves an edge over HTTP/1.1 and, where TLS negotiates it,
+// HTTP/2. Go doesn't offer WebSockets over HTTP/2, so browsers open them
+// over HTTP/1.1, which the proxy upgrades.
+func newServer(h http.Handler) *http.Server {
+	var protocols http.Protocols
+	protocols.SetHTTP1(true)
+	protocols.SetHTTP2(true)
+	return &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, ConnContext: connContext, Protocols: &protocols}
 }
 
 func tagFor(kind store.Kind) string {
@@ -101,7 +126,7 @@ func (m *Manager) Ensure(ctx context.Context, service string, kind store.Kind, e
 	if err != nil {
 		return "", err
 	}
-	v := &managed{expose: expose}
+	v := &managed{expose: expose, raw: map[string]rawListener{}}
 	v.node.Store(n)
 	v.edge = New(func(ctx context.Context, remote string) (Identity, error) {
 		who, err := v.node.Load().Client.WhoIs(ctx, remote)
@@ -118,7 +143,7 @@ func (m *Manager) Ensure(ctx context.Context, service string, kind store.Kind, e
 		_ = n.Close()
 		return "", fmt.Errorf("listen on %s: %w", n.DNS, err)
 	}
-	v.server = &http.Server{Handler: v.edge, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, ConnContext: connContext}
+	v.server = newServer(v.edge)
 	m.mu.Lock()
 	m.nodes[service] = v
 	m.mu.Unlock()
@@ -169,6 +194,15 @@ func (m *Manager) restart(ctx context.Context, service string, kind store.Kind, 
 		}
 		n = replacement
 		v.node.Store(n)
+		// Raw listeners belonged to the stopped node; open them again on the
+		// new one, pointed where they were.
+		m.mu.Lock()
+		err = m.reopenRaw(n, v)
+		m.mu.Unlock()
+		if err != nil {
+			_ = n.Close()
+			return down(err)
+		}
 	}
 	listener, err := m.listen(n, v.expose)
 	if err != nil {
@@ -210,23 +244,123 @@ func connContext(ctx context.Context, conn net.Conn) context.Context {
 	return ctx
 }
 
-func (m *Manager) Switch(service string, port int) error {
+// Switch points the service's HTTPS address, its routes and its raw ports at
+// revision r. Requests, connections and flows already under way stay on the
+// revision they started on.
+func (m *Manager) Switch(r store.Revision) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	v := m.nodes[service]
+	v := m.nodes[r.Service]
 	if v == nil {
 		return errors.New("edge node is not running")
 	}
-	if v.port == port {
+	if v.port == r.Port {
 		return nil
 	}
-	target, err := NewTarget(fmt.Sprintf("http://127.0.0.1:%d", port), v.node.Load().DNS)
+	n := v.node.Load()
+	_, ingress := r.Spec.Ingress()
+	target, err := NewTarget(origin(r.Port), n.DNS, ingress.Protocol)
 	if err != nil {
 		return err
 	}
+	routed := map[int]*Target{}
+	for _, route := range r.Spec.Routes {
+		to := routed[route.Port]
+		if to == nil {
+			port := r.Ports[spec.RouteKey(route.Port)]
+			if port == 0 {
+				return fmt.Errorf("r%d has no host port for %s", r.Rev, spec.RouteKey(route.Port))
+			}
+			if to, err = NewTarget(origin(port), n.DNS, route.Protocol); err != nil {
+				return err
+			}
+			routed[route.Port] = to
+		}
+		target.Route(route.Path, to)
+	}
+	want := map[string]*upstream{}
+	for _, l := range r.Spec.Listeners() {
+		port := r.Ports[l.Key()]
+		if port == 0 {
+			return fmt.Errorf("r%d has no host port for %s", r.Rev, l.Key())
+		}
+		want[l.Key()] = &upstream{rev: r.Port, port: port}
+		if v.raw[l.Key()] == nil {
+			raw, err := listenRaw(n, l)
+			if err != nil {
+				return fmt.Errorf("listen on %s %s: %w", n.DNS, l.Key(), err)
+			}
+			v.raw[l.Key()] = raw
+		}
+	}
+	for key, raw := range v.raw {
+		if want[key] == nil {
+			raw.close()
+			delete(v.raw, key)
+		} else {
+			raw.point(want[key])
+		}
+	}
 	v.edge.Switch(target)
-	v.port = port
+	v.port = r.Port
 	return nil
+}
+
+func origin(port int) string { return fmt.Sprintf("http://127.0.0.1:%d", port) }
+
+// reopenRaw opens v's raw listeners on n, replacing those of a stopped node,
+// all or none: after a failure v keeps every key, so the next restart tries
+// them all again. Guarded by m.mu.
+func (m *Manager) reopenRaw(n *tailnet.Node, v *managed) error {
+	fresh := map[string]rawListener{}
+	for key, old := range v.raw {
+		old.close()
+		protocol, port, _ := strings.Cut(key, "/")
+		number, _ := strconv.Atoi(port)
+		raw, err := listenRaw(n, spec.Listener{Protocol: protocol, Port: number})
+		if err != nil {
+			for _, opened := range fresh {
+				opened.close()
+			}
+			return fmt.Errorf("listen on %s %s: %w", n.DNS, key, err)
+		}
+		raw.point(old.upstream())
+		fresh[key] = raw
+	}
+	v.raw = fresh
+	return nil
+}
+
+// Retire closes the raw connections and flows still open to the revision
+// whose ingress host port is port, before its ports are released for reuse.
+// HTTP requests need nothing: they end with the revision's pod.
+func (m *Manager) Retire(service string, port int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if v := m.nodes[service]; v != nil && port != 0 {
+		for _, raw := range v.raw {
+			raw.retire(port)
+		}
+	}
+}
+
+// Addrs returns the service node's tailnet IPv4 and IPv6 addresses, or
+// empty strings while it has no node.
+func (m *Manager) Addrs(service string) (ipv4, ipv6 string) {
+	m.mu.Lock()
+	v := m.nodes[service]
+	m.mu.Unlock()
+	if v == nil {
+		return "", ""
+	}
+	ip4, ip6 := v.node.Load().Server.TailscaleIPs()
+	if ip4.IsValid() {
+		ipv4 = ip4.String()
+	}
+	if ip6.IsValid() {
+		ipv6 = ip6.String()
+	}
+	return ipv4, ipv6
 }
 
 func (m *Manager) Port(service string) int {
@@ -244,6 +378,9 @@ func (m *Manager) Clear(service string) {
 	if v := m.nodes[service]; v != nil {
 		v.edge.Switch(nil)
 		v.port = 0
+		for _, raw := range v.raw {
+			raw.point(nil)
+		}
 	}
 }
 
@@ -261,6 +398,11 @@ func (m *Manager) Delete(ctx context.Context, service string, kind store.Kind) e
 		if v != nil {
 			n := v.node.Load()
 			_ = v.server.Close()
+			m.mu.Lock()
+			for _, raw := range v.raw {
+				raw.close()
+			}
+			m.mu.Unlock()
 			_ = n.Client.Logout(ctx)
 			_ = n.Close()
 		}
@@ -299,6 +441,9 @@ func (m *Manager) Close() error {
 	defer m.mu.Unlock()
 	var out error
 	for _, v := range m.nodes {
+		for _, raw := range v.raw {
+			raw.close()
+		}
 		out = errors.Join(out, v.server.Close(), v.node.Load().Close())
 	}
 	return out

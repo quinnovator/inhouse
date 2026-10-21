@@ -2,7 +2,8 @@
 // API on a Unix socket.
 //
 // Each revision is one pod, svc-<service>-r<rev>, whose containers share a
-// network namespace. Only the ingress port is published, on 127.0.0.1. Every
+// network namespace. Only the ingress port, routed ports and raw ports are
+// published, each on its own 127.0.0.1 host port. Every
 // pod, container and Podman secret carries inhouse labels, and every mutating
 // call first verifies them: objects inhouse didn't create are never touched.
 package podman
@@ -14,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -196,8 +198,9 @@ func (p *Podman) verifyMembers(ctx context.Context, pod podInfo, r store.Revisio
 }
 
 // Up creates whatever part of the revision's pod is missing and starts every
-// container, sidecars first and the ingress last.
-func (p *Podman) Up(ctx context.Context, r store.Revision) error {
+// container, sidecars first and the ingress last. Containers it creates get
+// env, then their own env over it.
+func (p *Podman) Up(ctx context.Context, r store.Revision, env map[string]string) error {
 	offset, err := p.Offset(ctx, r.Service)
 	if err != nil {
 		return err
@@ -219,7 +222,7 @@ func (p *Podman) Up(ctx context.Context, r store.Revision) error {
 		name := PodName(r) + "-" + n
 		info, err := p.inspectContainer(ctx, name, r, pod.ID)
 		if isMissing(err) {
-			if err = p.createContainer(ctx, r, n, pod.ID); err != nil {
+			if err = p.createContainer(ctx, r, n, pod.ID, env); err != nil {
 				return err
 			}
 			info, err = p.inspectContainer(ctx, name, r, pod.ID)
@@ -237,12 +240,15 @@ func (p *Podman) Up(ctx context.Context, r store.Revision) error {
 }
 
 func (p *Podman) createPod(ctx context.Context, r store.Revision, offset int) error {
-	_, ingress := r.Spec.Ingress()
 	network := p.Network
 	if network == "" {
 		network = "pasta"
 	}
 	ids := []any{map[string]int{"ContainerID": 0, "HostID": offset, "Size": 65536}}
+	ports, err := portMappings(r)
+	if err != nil {
+		return err
+	}
 	return p.call(ctx, "POST", "/pods/create", map[string]any{
 		"name":              PodName(r),
 		"hostname":          PodName(r),
@@ -251,14 +257,46 @@ func (p *Podman) createPod(ctx context.Context, r store.Revision, offset int) er
 		"idmappings":        map[string]any{"HostUIDMapping": false, "HostGIDMapping": false, "UIDMap": ids, "GIDMap": ids},
 		"netns":             map[string]string{"nsmode": network},
 		"shared_namespaces": []string{"ipc", "net", "uts"},
-		"portmappings": []any{map[string]any{
-			"host_ip": "127.0.0.1", "host_port": r.Port, "container_port": ingress.Port, "protocol": "tcp", "range": 1,
-		}},
+		"portmappings":      ports,
 	}, nil)
 }
 
-func (p *Podman) createContainer(ctx context.Context, r store.Revision, n, pod string) error {
+// portMappings publishes the ingress, each routed port and each raw port on
+// the revision's own 127.0.0.1 host ports, where the edge forwards to them.
+func portMappings(r store.Revision) ([]any, error) {
+	_, ingress := r.Spec.Ingress()
+	mapping := func(host, container int, protocol string) any {
+		return map[string]any{"host_ip": "127.0.0.1", "host_port": host, "container_port": container, "protocol": protocol, "range": 1}
+	}
+	out := []any{mapping(r.Port, ingress.Port, spec.TCP)}
+	published := map[string]bool{}
+	for _, route := range r.Spec.Routes {
+		key := spec.RouteKey(route.Port)
+		if published[key] {
+			continue
+		}
+		published[key] = true
+		if r.Ports[key] == 0 {
+			return nil, fmt.Errorf("revision has no host port for %s", key)
+		}
+		out = append(out, mapping(r.Ports[key], route.Port, spec.TCP))
+	}
+	for _, l := range r.Spec.Listeners() {
+		if r.Ports[l.Key()] == 0 {
+			return nil, fmt.Errorf("revision has no host port for %s", l.Key())
+		}
+		out = append(out, mapping(r.Ports[l.Key()], l.Port, l.Protocol))
+	}
+	return out, nil
+}
+
+func (p *Podman) createContainer(ctx context.Context, r store.Revision, n, pod string, platform map[string]string) error {
 	c := r.Spec.Containers[n]
+	env := maps.Clone(platform)
+	if env == nil {
+		env = map[string]string{}
+	}
+	maps.Copy(env, c.Env)
 	memory, _ := spec.Memory(c.Resources.Memory)
 	body := map[string]any{
 		"name":           PodName(r) + "-" + n,
@@ -267,7 +305,7 @@ func (p *Podman) createContainer(ctx context.Context, r store.Revision, n, pod s
 		"labels":         labels(r),
 		"restart_policy": "on-failure",
 		"restart_tries":  3,
-		"env":            c.Env,
+		"env":            env,
 		"env_host":       false,
 		"httpproxy":      false,
 		"resource_limits": map[string]any{

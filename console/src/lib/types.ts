@@ -36,9 +36,15 @@ export type Service = {
   url?: string
 }
 
+export type Port = { port: number; protocol: 'tcp' | 'udp'; count?: number }
+
+export type Route = { path: string; container: string; port: number; protocol?: 'http' | 'h2c' }
+
 export type Container = {
   image: string
   port?: number
+  protocol?: 'http' | 'h2c'
+  ports?: Port[]
   command?: string[]
   args?: string[]
   env?: Record<string, string>
@@ -54,6 +60,8 @@ export type Stack = {
   expose: string
   ttl?: string
   update_strategy?: string
+  drain?: string
+  routes?: Route[]
   containers: Record<string, Container>
   order: string[]
 }
@@ -66,6 +74,7 @@ export type Revision = {
   spec: Stack
   spec_hash: string
   host_port?: number
+  host_ports?: Record<string, number>
   state: RevState
   reason?: string
   created_by: string
@@ -157,6 +166,8 @@ export type SecretInfo = {
 export type ContainerPlan = {
   image: string
   port?: number
+  protocol?: 'http' | 'h2c'
+  ports?: Port[]
   env_keys: string[]
   secrets?: Record<string, string>
   volumes?: Record<string, string>
@@ -172,6 +183,8 @@ export type Plan = {
   expose: string
   ttl?: string
   update_strategy: string
+  drain?: string
+  routes?: Route[]
   warnings: string[]
   may_apply: boolean
 }

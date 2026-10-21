@@ -17,7 +17,7 @@ func TestFunnelTransportNeverInjectsTailnetIdentity(t *testing.T) {
 		_, _ = io.WriteString(w, r.Header.Get("Tailscale-User-Login"))
 	}))
 	defer upstream.Close()
-	target, e := NewTarget(upstream.URL, "service.example.ts.net")
+	target, e := NewTarget(upstream.URL, "service.example.ts.net", "")
 	if e != nil {
 		t.Fatal(e)
 	}
