@@ -89,7 +89,10 @@ pending ──▶ starting ──▶ live ──▶ draining ──▶ stopped
 5. **Cut over.** Make the candidate the live revision in the database, then
    swap the edge's upstream pointer. New requests go to the new pod; requests
    in flight finish on the old one.
-6. **Drain.** After ten seconds, stop the old pod, remove it, release its port.
+6. **Drain.** Once the stack's [drain](stack-spec.md#drain) ends (ten
+   seconds by default), stop the old pod, close any raw connections still
+   open to it, remove it and release its ports. A drain longer than a pass
+   doesn't hold up the deploy: a later pass stops the old revision.
 
 If pulling, starting or health checking fails, the candidate is stopped, its
 last 20 log lines are saved as an event, and the operation fails. The live
@@ -186,6 +189,43 @@ port 443 with a reverse proxy whose upstream is one atomic pointer. Cutover
 is a single pointer store; there is no restart and no dropped connection.
 WebSockets and streaming responses pass through.
 
+Callers negotiate HTTP/2 or HTTP/1.1. The edge speaks HTTP/1.1 to the pod,
+or HTTP/2 without TLS (`h2c`) when the ingress sets `protocol: h2c`, which is
+how gRPC gets its trailers and bidirectional streams. Go doesn't offer
+WebSockets over HTTP/2, so browsers open them over HTTP/1.1, which the proxy
+upgrades. [Routes](stack-spec.md#routes) send path prefixes to other
+containers in the pod on the same address.
+
+### Raw ports and real-time media
+
+A service can also publish [raw TCP and UDP
+ports](stack-spec.md#raw-tcp-and-udp-ports) on its node. Each is a
+listener in the node's userspace network stack, forwarding to that
+revision's loopback host port:
+
+```
+phone ── WireGuard ──▶ 100.x.y.z:7882/udp (the service's node, in inhoused)
+                         │ one loopback socket per remote address and port
+                         ▼
+                   127.0.0.1:<host port> ──▶ pod :7882
+```
+
+UDP is forwarded per flow, so the pod sees each peer as its own address and
+port. A raw listener's upstream switches with the HTTPS one: new
+connections and flows go to the live revision, and those already open stay
+on the revision they started on until its drain ends, when they are closed.
+Containers learn their service's tailnet addresses from
+`INHOUSE_TAILNET_IPV4` and `INHOUSE_TAILNET_IPV6`, which a WebRTC server
+advertises as its ICE candidates.
+
+This is what makes WebRTC work well on a tailnet. Every caller reaches the
+service's tailnet address directly, so there is no NAT to traverse and no
+STUN or TURN server; WireGuard already carries the traffic over UDP, so
+media has no head-of-line blocking; and a phone keeps its tailnet address
+when it moves between Wi-Fi and cellular, so a call doesn't renegotiate.
+The edge adds one loopback hop, well under a millisecond. Raw ports are
+never reachable through Funnel, which carries only TCP.
+
 Before forwarding, the edge deletes every client-sent `Tailscale-User-*`
 header, asks Tailscale who the caller is, and sets:
 
@@ -232,8 +272,8 @@ how agents get *their own* narrower permissions instead of yours. See
 
 Each revision is one pod, `svc-<service>-r<N>`, owned by the unprivileged
 `inhouse` user. Containers in a pod share `localhost`, so a web app reaches
-its database sidecar without any networking. Only the ingress port is
-published, on `127.0.0.1:<host port>`.
+its database sidecar without any networking. Only the ingress port, routed
+ports and raw ports are published, each on its own `127.0.0.1:<host port>`.
 
 Every pod, container and Podman secret carries `inhouse=1` labels naming its
 service, revision and spec hash, and inhouse verifies them before touching
@@ -299,7 +339,7 @@ you, separately.
 | `internal/userns` | Per-service subordinate ID slices |
 | `internal/vault` | age-encrypted secrets, pinning and redaction |
 | `internal/tailnet` | tsnet nodes and the Tailscale API (keys, device deletion) |
-| `internal/edge` | Per-service HTTPS listeners and the swapping proxy |
+| `internal/edge` | Per-service HTTPS listeners, the swapping proxy and its routes, and raw TCP/UDP forwarding |
 | `internal/api` | `/v1` JSON API and `/mcp`, over the same engine |
 | `internal/console` | Serves the embedded web console build |
 | `console/` | The web console's source (TanStack Start, single-page); calls `/v1` |

@@ -25,9 +25,10 @@ type fakeRuntime struct {
 	partial   bool         // Running reports false: some container is down
 	logs      string
 	upHook    func(store.Revision)
-	strays    []store.Revision // labelled pods with no revision row
-	orphans   []string         // pods RemoveOrphan removed
-	swept     []string         // services whose secrets were swept
+	env       map[string]map[string]string // platform env each revision was last brought up with
+	strays    []store.Revision             // labelled pods with no revision row
+	orphans   []string                     // pods RemoveOrphan removed
+	swept     []string                     // services whose secrets were swept
 }
 
 func key(r store.Revision) string { return fmt.Sprintf("%s/%d", r.Service, r.Rev) }
@@ -55,12 +56,16 @@ func (f *fakeRuntime) Resolve(ctx context.Context, image string) (string, error)
 	tag := image[strings.LastIndex(image, ":")+1:]
 	return image[:strings.LastIndex(image, ":")] + "@sha256:" + strings.Repeat(string("abcdef"[len(tag)%6]), 64), nil
 }
-func (f *fakeRuntime) Up(_ context.Context, r store.Revision) error {
+func (f *fakeRuntime) Up(_ context.Context, r store.Revision, env map[string]string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.upHook != nil {
 		f.upHook(r)
 	}
+	if f.env == nil {
+		f.env = map[string]map[string]string{}
+	}
+	f.env[key(r)] = env
 	f.running[key(r)] = true
 	f.starts[key(r)]++
 	return nil
@@ -155,6 +160,8 @@ type fakeEdges struct {
 	ensureErr error // Ensure fails, and a stopped listener stays stopped
 	failNext  bool
 	deletions []string
+	switched  map[string]store.Revision // the revision each edge last switched to
+	retired   []string                  // service/port of each Retire
 }
 
 func (f *fakeEdges) Ensure(_ context.Context, name string, _ store.Kind, _ string) (string, error) {
@@ -176,16 +183,26 @@ func (f *fakeEdges) Stopped(name string) error {
 	defer f.mu.Unlock()
 	return f.stopped[name]
 }
-func (f *fakeEdges) Switch(name string, port int) error {
+func (f *fakeEdges) Switch(r store.Revision) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failNext {
 		f.failNext = false
 		return errors.New("injected crash after cutover")
 	}
-	f.ports[name] = port
+	f.ports[r.Service] = r.Port
+	if f.switched == nil {
+		f.switched = map[string]store.Revision{}
+	}
+	f.switched[r.Service] = r
 	return nil
 }
+func (f *fakeEdges) Retire(name string, port int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.retired = append(f.retired, fmt.Sprintf("%s/%d", name, port))
+}
+func (f *fakeEdges) Addrs(name string) (string, string) { return "100.64.0.7", "fd7a:115c:a1e0::7" }
 func (f *fakeEdges) Port(name string) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1092,5 +1109,88 @@ func TestGetIncludesAnOlderLiveRevision(t *testing.T) {
 	d, err := h.Get(admin(), "hello")
 	if err != nil || len(d.Revisions) != 11 || d.Revisions[0].Rev != 12 || d.Revisions[10].Rev != 1 {
 		t.Fatalf("%d revisions, %v", len(d.Revisions), err)
+	}
+}
+
+func TestRoutesAndRawPortsReachTheEdgeWithPlatformEnv(t *testing.T) {
+	h := setup(t)
+	o := h.deploy(t, []byte(`name: media
+routes: [{path: /rtc, container: sfu, port: 7880}]
+containers:
+  sfu:
+    image: docker.io/livekit/livekit-server:1
+    env: {INHOUSE_URL: https://override.example}
+    ports: [{port: 7882, protocol: udp}, {port: 7881, protocol: tcp}]
+  web:
+    image: docker.io/traefik/whoami:1
+    port: 80
+`), "")
+	if o.State != store.Succeeded {
+		t.Fatalf("%+v", o)
+	}
+	r, _ := h.db.Revision(context.Background(), "media", 1)
+	switched := h.edges.switched["media"]
+	if switched.Port != r.Port || len(switched.Ports) != 3 || switched.Ports["udp/7882"] == 0 || switched.Ports["http/7880"] == 0 {
+		t.Fatalf("edge got %+v, revision has %+v", switched, r)
+	}
+	env := h.rt.env["media/1"]
+	want := map[string]string{
+		"INHOUSE_SERVICE": "media", "INHOUSE_REVISION": "1", "INHOUSE_DNS_NAME": "media.example.ts.net",
+		"INHOUSE_URL": "https://media.example.ts.net", "INHOUSE_TAILNET_IPV4": "100.64.0.7", "INHOUSE_TAILNET_IPV6": "fd7a:115c:a1e0::7",
+	}
+	for k, v := range want {
+		if env[k] != v {
+			t.Errorf("%s=%q, want %q", k, env[k], v)
+		}
+	}
+}
+
+// A long drain keeps the replaced revision serving what it has open, without
+// holding up the deploy that replaced it. Once it ends, a pass stops the old
+// revision and retires its raw connections before its ports are reused.
+func TestStackDrainOutlivesTheDeploy(t *testing.T) {
+	h := setup(t)
+	ctx := context.Background()
+	// Any drain longer than a pass interval is left to a later pass.
+	h.cfg.Interval = time.Millisecond
+	h.deploy(t, stack("calls", "docker.io/traefik/whoami:1", "drain: 2s\n"), "")
+	old, _ := h.db.Revision(ctx, "calls", 1)
+	start := time.Now()
+	o := h.deploy(t, stack("calls", "docker.io/traefik/whoami:two", "drain: 2s\n"), "")
+	if o.State != store.Succeeded || time.Since(start) > time.Second {
+		t.Fatalf("deploy waited out the drain: %+v after %s", o, time.Since(start))
+	}
+	draining, _ := h.db.Revision(ctx, "calls", 1)
+	if draining.State != store.Draining || !h.rt.running["calls/1"] || len(h.edges.retired) != 0 {
+		t.Fatalf("replaced revision stopped early: %+v", draining)
+	}
+	if until := time.Until(time.Unix(draining.DrainUntil, 0)); until < 0 || until > 3*time.Second {
+		t.Fatalf("drain ends in %s, want the stack's 2s", until)
+	}
+	time.Sleep(time.Until(time.Unix(draining.DrainUntil, 0)) + 10*time.Millisecond)
+	if err := h.reconcile(ctx, "calls"); err != nil {
+		t.Fatal(err)
+	}
+	stopped, _ := h.db.Revision(ctx, "calls", 1)
+	if stopped.State != store.Stopped || stopped.Port != 0 || h.rt.running["calls/1"] {
+		t.Fatalf("%+v", stopped)
+	}
+	if len(h.edges.retired) != 1 || h.edges.retired[0] != fmt.Sprintf("calls/%d", old.Port) {
+		t.Fatal(h.edges.retired)
+	}
+}
+
+// A recreate update stops the old revision first, so a stack's drain must not
+// keep it, and its ports, around afterwards.
+func TestRecreateIgnoresStackDrain(t *testing.T) {
+	h := setup(t)
+	ctx := context.Background()
+	h.deploy(t, withVolume(stack("notes", "docker.io/traefik/whoami:1", "drain: 1h\n")), "")
+	if o := h.deploy(t, withVolume(stack("notes", "docker.io/traefik/whoami:two", "drain: 1h\n")), ""); o.State != store.Succeeded {
+		t.Fatalf("%+v", o)
+	}
+	old, _ := h.db.Revision(ctx, "notes", 1)
+	if old.State != store.Stopped || old.Port != 0 {
+		t.Fatalf("replaced recreate revision kept for the stack's drain: %+v", old)
 	}
 }

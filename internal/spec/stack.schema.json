@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "inhouse stack",
-  "description": "A service: its containers, which one receives traffic, health checks, environment, secrets and volumes. The parser additionally enforces exactly one ingress port, fully qualified image references, health timeouts of 5s-120s and recreate updates for stacks with volumes.",
+  "description": "A service: its containers, which one receives traffic, health checks, environment, secrets and volumes. The parser additionally enforces exactly one ingress port, fully qualified image references, health timeouts of 5s-120s and recreate updates for stacks with volumes, and that route paths and raw ports don't collide.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -55,6 +55,46 @@
             "minimum": 1,
             "maximum": 65535,
             "description": "Container port receiving HTTP traffic. Exactly one container sets it."
+          },
+          "protocol": {
+            "enum": [
+              "http",
+              "h2c"
+            ],
+            "default": "http",
+            "description": "Ingress only: what the container speaks on port. http is HTTP/1.1; h2c is HTTP/2 without TLS, which gRPC needs."
+          },
+          "ports": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "port",
+                "protocol"
+              ],
+              "properties": {
+                "port": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535
+                },
+                "protocol": {
+                  "enum": [
+                    "tcp",
+                    "udp"
+                  ]
+                },
+                "count": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 64,
+                  "description": "Consecutive ports from port; default 1."
+                }
+              }
+            },
+            "description": "Raw TCP or UDP ports served on the service's tailnet addresses, each forwarded to the same port in the pod. At most 64 in all; tcp/443 is the HTTPS address. Reachable from the tailnet only, without identity headers."
           },
           "command": {
             "type": "array",
@@ -154,6 +194,47 @@
         "recreate"
       ],
       "description": "rolling (default) starts the new revision beside the old one. recreate (required with volumes) stops the old revision first, so updates cause brief downtime."
+    },
+    "drain": {
+      "type": "string",
+      "description": "Go duration from 1s to 24h: how long a replaced revision keeps serving connections it already has (WebSockets, streams, calls). Defaults to the daemon's setting, 10s. Only rolling updates drain."
+    },
+    "routes": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "container",
+          "port"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "pattern": "^(/[A-Za-z0-9._~-]+)+$",
+            "maxLength": 256
+          },
+          "container": {
+            "type": "string",
+            "pattern": "^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$"
+          },
+          "port": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535
+          },
+          "protocol": {
+            "enum": [
+              "http",
+              "h2c"
+            ],
+            "default": "http"
+          }
+        }
+      },
+      "description": "HTTP requests whose path is path, or below it, go to port instead of the ingress, with the path unchanged. The longest matching path wins."
     }
   }
 }

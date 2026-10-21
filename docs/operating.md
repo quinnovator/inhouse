@@ -147,7 +147,7 @@ raw errors. The development console preview uses fixed example host data.
 | `-podman-socket` | `$XDG_RUNTIME_DIR/podman/podman.sock` | Rootless Podman API |
 | `-podman-network` | `pasta` | Or `slirp4netns` |
 | `-control-hostname` | `deploy` | The control node's name |
-| `-port-range` | `20000-29999` | Loopback ports for pod ingress |
+| `-port-range` | `20000-29999` | Loopback ports pods publish their ingress, routed and raw ports on; each revision takes one per port |
 | `-pull-timeout` | `30m` | How long pulling each image may take |
 | `-history-retention` | `2160h` (90 days) | How long events and finished operations are kept; each service keeps its newest 20 events regardless. `0` keeps everything |
 | `-subid-base`, `-subid-count` | `1000000`, `4194304` | Must match `/etc/subuid` and `/etc/subgid` |

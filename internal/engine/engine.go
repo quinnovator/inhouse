@@ -26,7 +26,10 @@ import (
 type Runtime interface {
 	// Resolve pulls an image and returns its pinned digest reference.
 	Resolve(ctx context.Context, image string) (string, error)
-	Up(ctx context.Context, r store.Revision) error
+	// Up creates and starts whatever part of r's pod isn't running. env is
+	// the platform's environment for every container it creates; a
+	// container's own env wins over it.
+	Up(ctx context.Context, r store.Revision, env map[string]string) error
 	Running(ctx context.Context, r store.Revision) (bool, error)
 	// Check runs one container's health check once.
 	Check(ctx context.Context, r store.Revision, container string) error
@@ -54,14 +57,21 @@ type Volumes interface {
 	Delete(ctx context.Context, svc store.Service) error
 }
 
-// Edges are the per-service tailnet nodes that proxy HTTPS to a revision.
+// Edges are the per-service tailnet nodes that proxy HTTPS, and raw TCP and
+// UDP ports, to a revision.
 type Edges interface {
 	// Ensure starts the service's node if needed and returns its DNS name.
 	Ensure(ctx context.Context, service string, kind store.Kind, expose string) (string, error)
-	// Switch atomically points the edge at a local port.
-	Switch(service string, port int) error
-	// Port reports where the edge points, or 0.
+	// Switch atomically points the edge at r's host ports: its ingress, its
+	// routes and its raw ports. What is already open stays where it started.
+	Switch(r store.Revision) error
+	// Port reports the ingress host port the edge points at, or 0.
 	Port(service string) int
+	// Retire closes the raw connections and flows still open to the revision
+	// whose ingress host port is port, before its ports are reused.
+	Retire(service string, port int)
+	// Addrs returns the service node's tailnet IPv4 and IPv6 addresses.
+	Addrs(service string) (ipv4, ipv6 string)
 	// Clear makes the edge answer 503 until the next Switch.
 	Clear(service string)
 	// Stopped reports why the service's HTTPS listener stopped serving, or
@@ -74,9 +84,11 @@ type Edges interface {
 type Config struct {
 	// ControlName is the control node's hostname; no service may use it.
 	ControlName string
-	// PortLow..PortHigh is the loopback range pods publish their ingress on.
+	// PortLow..PortHigh is the loopback range pods publish their ingress,
+	// routed and raw ports on.
 	PortLow, PortHigh int
-	// Drain is how long a replaced revision keeps running for in-flight requests.
+	// Drain is how long a replaced revision keeps running for in-flight
+	// requests, unless its replacement's stack sets drain.
 	Drain time.Duration
 	// HealthInterval separates health check attempts.
 	HealthInterval time.Duration

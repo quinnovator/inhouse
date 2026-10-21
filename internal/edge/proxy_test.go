@@ -18,7 +18,7 @@ import (
 
 func target(t *testing.T, raw string) *Target {
 	t.Helper()
-	u, err := NewTarget(raw, "hello.example.ts.net")
+	u, err := NewTarget(raw, "hello.example.ts.net", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +203,7 @@ func TestStreamingAndWebSocket(t *testing.T) {
 
 func TestRejectNonLoopbackOrigins(t *testing.T) {
 	for _, raw := range []string{"http://example.com:80", "http://192.0.2.1:80", "https://127.0.0.1:80", "http://127.0.0.1:80/path", "http://user@127.0.0.1:80", "http://127.0.0.1"} {
-		if _, err := NewTarget(raw, "edge.example"); err == nil {
+		if _, err := NewTarget(raw, "edge.example", ""); err == nil {
 			t.Errorf("accepted %s", raw)
 		}
 	}

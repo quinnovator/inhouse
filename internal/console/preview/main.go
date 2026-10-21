@@ -188,7 +188,7 @@ func (f *runtime) Resolve(_ context.Context, image string) (string, error) {
 	return image[:strings.LastIndex(image, ":")] + "@sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
-func (f *runtime) Up(_ context.Context, r store.Revision) error {
+func (f *runtime) Up(_ context.Context, r store.Revision, _ map[string]string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.running[key(r)] = true
@@ -294,13 +294,15 @@ type edges struct {
 func (e *edges) Ensure(_ context.Context, name string, _ store.Kind, _ string) (string, error) {
 	return name + ".tail4f2c.ts.net", nil
 }
-func (e *edges) Switch(name string, port int) error {
+func (e *edges) Switch(r store.Revision) error {
 	e.mu.Lock()
-	e.ports[name] = port
+	e.ports[r.Service] = r.Port
 	e.mu.Unlock()
 	return nil
 }
 func (e *edges) Port(name string) int                             { e.mu.Lock(); defer e.mu.Unlock(); return e.ports[name] }
 func (e *edges) Clear(name string)                                { e.mu.Lock(); delete(e.ports, name); e.mu.Unlock() }
 func (e *edges) Stopped(string) error                             { return nil }
+func (e *edges) Retire(string, int)                               {}
+func (e *edges) Addrs(string) (string, string)                    { return "100.101.102.103", "fd7a:115c:a1e0::1" }
 func (e *edges) Delete(context.Context, string, store.Kind) error { return nil }
