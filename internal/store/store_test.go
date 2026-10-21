@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strconv"
@@ -414,5 +415,88 @@ func TestPruneKeepsRecentHistoryAndEachServicesNewest(t *testing.T) {
 	}
 	if again, _, _ := s.Prune(ctx, time.Now().Add(-90*24*time.Hour), 20); again != 0 {
 		t.Fatalf("second prune deleted %d events", again)
+	}
+}
+
+func TestRecordReservesRouteAndRawPorts(t *testing.T) {
+	s := open(t)
+	ctx := context.Background()
+	st, err := spec.Parse([]byte(`name: media
+routes:
+  - {path: /rtc, container: sfu, port: 7880}
+  - {path: /twirp, container: sfu, port: 7880}
+containers:
+  sfu:
+    image: docker.io/a/sfu:1
+    ports: [{port: 7882, protocol: udp}, {port: 50000, protocol: udp, count: 2}]
+  web: {image: docker.io/a/b:1, port: 80}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := stack(t, "other")
+	if _, err = s.Record(ctx, Request{Stack: other, Kind: Deploy, RequestHash: "o", Actor: "me", PortLow: 20000, PortHigh: 20009}); err != nil {
+		t.Fatal(err)
+	}
+	o, err := s.Record(ctx, Request{Stack: st, Kind: Deploy, RequestHash: "m", Actor: "me", PortLow: 20000, PortHigh: 20009})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := s.Revision(ctx, "media", o.Rev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]int{"http/7880": 20002, "udp/7882": 20003, "udp/50000": 20004, "udp/50001": 20005}
+	if r.Port != 20001 || len(r.Ports) != len(want) {
+		t.Fatal(r.Port, r.Ports)
+	}
+	for k, p := range want {
+		if r.Ports[k] != p {
+			t.Fatal(k, r.Ports)
+		}
+	}
+	// A revision needing more ports than are free is refused whole.
+	big := stack(t, "big")
+	big.Containers["web"] = spec.Container{Image: "docker.io/a/b:1", Port: 80, Ports: []spec.Port{{Port: 9000, Protocol: spec.UDP, Count: 5}}}
+	if _, err = s.Record(ctx, Request{Stack: big, Kind: Deploy, RequestHash: "b", Actor: "me", PortLow: 20000, PortHigh: 20009}); err == nil {
+		t.Fatal("recorded a revision without enough free ports")
+	}
+	if err = s.ReleasePort(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	if r, err = s.Revision(ctx, "media", o.Rev); err != nil || r.Port != 0 || r.Ports != nil {
+		t.Fatal("ports not released", r.Port, r.Ports, err)
+	}
+	if _, err = s.Record(ctx, Request{Stack: big, Kind: Deploy, RequestHash: "b", Actor: "me", PortLow: 20000, PortHigh: 20009}); err != nil {
+		t.Fatal("released ports were not reused:", err)
+	}
+}
+
+func TestPortsMigrationKeepsRevisions(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "state.db")
+	db, err := sql.Open("sqlite", file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := stack(t, "old")
+	raw, _ := json.Marshal(st)
+	if _, err = db.Exec(schemaV1 + healthV2 + lifecycleV3 + "; PRAGMA user_version=3;"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec("INSERT INTO services(name,kind,current_rev,created_by,created_at) VALUES('old','persistent',1,'me',0)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec("INSERT INTO revisions(service,rev,spec_json,spec_hash,host_port,state,created_by,created_at) VALUES('old',1,?,?,20000,'live','me',0)", string(raw), st.Hash()); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+	s, err := Open(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	r, err := s.Revision(context.Background(), "old", 1)
+	if err != nil || r.Port != 20000 || r.Ports != nil || r.Hash != st.Hash() {
+		t.Fatal(r, err)
 	}
 }

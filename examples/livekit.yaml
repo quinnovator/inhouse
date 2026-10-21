@@ -1,0 +1,40 @@
+# A LiveKit WebRTC server: signaling over the service's HTTPS address, media
+# over raw tailnet ports. Callers on your tailnet connect to
+# wss://livekit.<tailnet>.ts.net with a token minted from your API key.
+#
+# LiveKit advertises the address the edge listens on: inhouse sets
+# INHOUSE_TAILNET_IPV4 to the service's tailnet address. All media shares one
+# UDP port; TCP 7881 is the fallback for networks that block UDP. No TURN or
+# STUN server is needed: every caller reaches the tailnet address directly.
+#
+# Set the API key first, as "<key>: <secret>" (the secret at least 32
+# characters):
+#   echo -n 'APIdemo: <a-long-random-secret>' | inhouse secrets set livekit-keys
+version: 1
+name: livekit
+# Calls stay on the revision they started on for up to 30 minutes after a
+# deploy; new calls go to the new revision at once.
+drain: 30m
+containers:
+  livekit:
+    image: docker.io/livekit/livekit-server:v1.9.1
+    port: 7880
+    command: ["sh", "-c"]
+    args: ['exec /livekit-server --node-ip "$INHOUSE_TAILNET_IPV4"']
+    env:
+      LIVEKIT_CONFIG: |
+        port: 7880
+        rtc:
+          tcp_port: 7881
+          udp_port: 7882
+          use_external_ip: false
+    secrets:
+      LIVEKIT_KEYS: livekit-keys
+    ports:
+      - {port: 7881, protocol: tcp}
+      - {port: 7882, protocol: udp}
+    health:
+      path: /
+    resources:
+      memory: 512Mi
+      cpus: 1

@@ -262,7 +262,10 @@ function PlanRow({ name, before, after }: { name: string; before?: ContainerPlan
     <tr>
       <td>
         <strong>{name}</strong>
-        <div className="sub">{c.port ? `ingress :${c.port}` : 'sidecar'}</div>
+        <div className="sub">{c.port ? `ingress :${c.port}${c.protocol === 'h2c' ? ' · h2c' : ''}` : 'sidecar'}</div>
+        {(c.ports?.length ?? 0) > 0 && (
+          <div className="sub mono">{diff((x) => (x.ports ?? []).map((p) => `${p.protocol}/${p.port}${(p.count ?? 1) > 1 ? `+${(p.count ?? 1) - 1}` : ''}`).join(', ') || '—')}</div>
+        )}
       </td>
       <td>
         <Pill tone={tone}>{label}</Pill>

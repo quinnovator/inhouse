@@ -5,6 +5,10 @@
 // stays up across deploys; only the proxy's upstream changes, through one
 // atomic pointer store. Requests that already loaded the old upstream finish
 // on it, which is why replaced revisions drain before they stop.
+//
+// Beside HTTPS, a node can serve raw TCP and UDP ports (see raw.go), which
+// switch the same way: new connections and flows go to the live revision,
+// and ones already open stay on the revision they started on.
 package edge
 
 import (
@@ -15,9 +19,12 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/quinnovator/inhouse/internal/spec"
 )
 
 // Identity is the tailnet user behind a request.
@@ -39,14 +46,23 @@ func Anonymous(ctx context.Context) context.Context {
 	return context.WithValue(ctx, anonymousKey{}, true)
 }
 
-// Target is a reverse proxy to one loopback upstream.
+// Target is a reverse proxy to one loopback upstream, and to the upstreams
+// that serve path prefixes beside it.
 type Target struct {
-	proxy *httputil.ReverseProxy
+	proxy  *httputil.ReverseProxy
+	routes []route // longest prefix first
+}
+
+type route struct {
+	prefix string
+	target *Target
 }
 
 // NewTarget accepts only numeric loopback HTTP origins: pods publish on
 // 127.0.0.1, and nothing can turn the edge into a proxy to other hosts.
-func NewTarget(rawURL, dnsName string) (*Target, error) {
+// protocol is what the upstream speaks: "" or spec.ProtocolHTTP for
+// HTTP/1.1, or spec.ProtocolH2C for HTTP/2 without TLS.
+func NewTarget(rawURL, dnsName, protocol string) (*Target, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Scheme != "http" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
 		return nil, errors.New("upstream must be a loopback HTTP origin")
@@ -62,6 +78,17 @@ func NewTarget(rawURL, dnsName string) (*Target, error) {
 	transport.MaxIdleConnsPerHost = 128
 	// Generous, so slow synchronous handlers (long LLM calls, say) can finish.
 	transport.ResponseHeaderTimeout = 10 * time.Minute
+	switch protocol {
+	case "", spec.ProtocolHTTP:
+	case spec.ProtocolH2C:
+		// Every request goes upstream as HTTP/2, so gRPC's trailers and
+		// bidirectional streams work whichever protocol the caller used.
+		var only http.Protocols
+		only.SetUnencryptedHTTP2(true)
+		transport.Protocols = &only
+	default:
+		return nil, errors.New("unknown upstream protocol " + protocol)
+	}
 	proxy := &httputil.ReverseProxy{
 		Transport:     transport,
 		FlushInterval: -1, // stream responses as they are written
@@ -91,6 +118,23 @@ func NewTarget(rawURL, dnsName string) (*Target, error) {
 	return &Target{proxy: proxy}, nil
 }
 
+// Route sends requests whose path is prefix, or below it, to to. The longest
+// matching prefix wins. Routes are set up before the target is switched in.
+func (t *Target) Route(prefix string, to *Target) {
+	t.routes = append(t.routes, route{prefix, to})
+	sort.SliceStable(t.routes, func(i, j int) bool { return len(t.routes[i].prefix) > len(t.routes[j].prefix) })
+}
+
+// pick returns the target serving path.
+func (t *Target) pick(path string) *Target {
+	for _, r := range t.routes {
+		if path == r.prefix || strings.HasPrefix(path, r.prefix+"/") {
+			return r.target
+		}
+	}
+	return t
+}
+
 // Edge is the HTTP handler for one service.
 type Edge struct {
 	upstream atomic.Pointer[Target]
@@ -118,5 +162,5 @@ func (e *Edge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		r = r.WithContext(context.WithValue(r.Context(), identityKey{}, id))
 	}
-	target.proxy.ServeHTTP(w, r)
+	target.pick(r.URL.Path).proxy.ServeHTTP(w, r)
 }

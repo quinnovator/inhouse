@@ -580,6 +580,8 @@ func (e *Engine) Platform(ctx context.Context) (PlatformView, error) {
 type ContainerPlan struct {
 	Image     string            `json:"image"`
 	Port      int               `json:"port,omitempty"`
+	Protocol  string            `json:"protocol,omitempty"`
+	Ports     []spec.Port       `json:"ports,omitempty"`
 	EnvKeys   []string          `json:"env_keys"`
 	Secrets   map[string]string `json:"secrets,omitempty"`
 	Volumes   map[string]string `json:"volumes,omitempty"`
@@ -595,6 +597,8 @@ type Plan struct {
 	Expose         string                   `json:"expose"`
 	TTL            *string                  `json:"ttl,omitempty"`
 	UpdateStrategy string                   `json:"update_strategy"`
+	Drain          string                   `json:"drain,omitempty"`
+	Routes         []spec.Route             `json:"routes,omitempty"`
 	Warnings       []string                 `json:"warnings"`
 	MayApply       bool                     `json:"may_apply"`
 }
@@ -610,7 +614,7 @@ func containers(s *spec.Stack) map[string]ContainerPlan {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
-		out[name] = ContainerPlan{c.Image, c.Port, keys, c.Secrets, c.Volumes, c.Resources}
+		out[name] = ContainerPlan{c.Image, c.Port, c.Protocol, c.Ports, keys, c.Secrets, c.Volumes, c.Resources}
 	}
 	return out
 }
@@ -626,7 +630,7 @@ func (e *Engine) Plan(ctx context.Context, raw []byte) (Plan, error) {
 	if err = p.RequireRead(s.Name); err != nil {
 		return Plan{}, err
 	}
-	out := Plan{Service: s.Name, After: containers(&s), Expose: s.Expose, TTL: s.TTL, UpdateStrategy: s.UpdateStrategy, Warnings: []string{}, MayApply: p.CanDeploy(s)}
+	out := Plan{Service: s.Name, After: containers(&s), Expose: s.Expose, TTL: s.TTL, UpdateStrategy: s.UpdateStrategy, Drain: s.Drain, Routes: s.Routes, Warnings: []string{}, MayApply: p.CanDeploy(s)}
 	var live *spec.Stack
 	svc, err := e.store.Service(ctx, s.Name)
 	switch {
@@ -662,6 +666,12 @@ func (e *Engine) Plan(ctx context.Context, raw []byte) (Plan, error) {
 	}
 	if s.Expose == spec.ExposeFunnel {
 		out.Warnings = append(out.Warnings, "Funnel makes this service reachable from the public Internet, without tailnet identity.")
+	}
+	if len(s.Listeners()) > 0 {
+		out.Warnings = append(out.Warnings, "Raw ports are reachable from the tailnet only, never through Funnel, and carry no identity headers: authenticate callers over HTTPS (for WebRTC, in signaling).")
+	}
+	if s.Drain != "" && s.UpdateStrategy == spec.Recreate {
+		out.Warnings = append(out.Warnings, "drain has no effect with recreate updates: the live revision stops before the new one starts.")
 	}
 	if s.SpecVersion == nil {
 		out.Warnings = append(out.Warnings, fmt.Sprintf("The spec has no version, so it is read as version %d. Add version: %d to keep its meaning fixed as inhouse changes.", spec.Version, spec.Version))

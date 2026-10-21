@@ -17,6 +17,8 @@ device approval and Tailnet Lock.
 | Threat | Mitigation | Residual |
 | --- | --- | --- |
 | Forged `Tailscale-User-*` headers | The edge deletes them and sets its own from WhoIs, after hop-by-hop processing | None for tailnet traffic |
+| Raw TCP/UDP ports bypassing identity | Raw ports listen only on the service's tailnet addresses, never on Funnel or the host; your policy decides who reaches them; the edge forwards only to that revision's loopback host ports | They carry no identity: apps must authenticate callers over HTTPS (for WebRTC, in signaling) |
+| A stale connection reaching another service | Raw connections and UDP flows are closed when their revision's ports are released, before any port is reused | |
 | Public traffic reaching control | Control runs only on `deploy`, which never listens on Funnel; Funnel is granted only to `tag:inhouse-svc` | Funnel-exposed apps must authenticate their own users |
 | Unauthorized control calls | Destination-scoped capability grants from WhoIs; no tokens; refused calls are recorded | Anyone your policy grants |
 | An agent doing more than intended | Tagged agent identity with narrow grants; secrets, volume restore and other services' deletion need admin | An agent can do anything its grant allows |

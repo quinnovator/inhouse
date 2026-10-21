@@ -1,10 +1,12 @@
 package spec
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const valid = `name: blog
@@ -76,10 +78,83 @@ func TestRejects(t *testing.T) {
 		"version as text":     "version: one\nname: a\n" + ingress,
 		"null version":        "version: null\nname: a\n" + ingress,
 		"empty version":       "version:\nname: a\n" + ingress,
+		"drain too long":      "name: a\ndrain: 48h\n" + ingress,
+		"bad protocol":        "name: a\ncontainers:\n  web: {image: docker.io/a/b:1, port: 80, protocol: h3}\n",
+		"sidecar protocol":    "name: a\ncontainers:\n  web: {image: docker.io/a/b:1, port: 80}\n  side: {image: docker.io/a/c:1, protocol: h2c}\n",
+		"raw port protocol":   "name: a\ncontainers:\n  web: {image: docker.io/a/b:1, port: 80, ports: [{port: 5000, protocol: sctp}]}\n",
+		"raw https port":      "name: a\ncontainers:\n  web: {image: docker.io/a/b:1, port: 80, ports: [{port: 443, protocol: tcp}]}\n",
+		"raw ingress port":    "name: a\ncontainers:\n  web: {image: docker.io/a/b:1, port: 80, ports: [{port: 80, protocol: tcp}]}\n",
+		"raw port twice":      "name: a\ncontainers:\n  web: {image: docker.io/a/b:1, port: 80, ports: [{port: 5000, protocol: udp, count: 3}]}\n  side: {image: docker.io/a/c:1, ports: [{port: 5002, protocol: udp}]}\n",
+		"range past 65535":    "name: a\ncontainers:\n  web: {image: docker.io/a/b:1, port: 80, ports: [{port: 65535, protocol: udp, count: 2}]}\n",
+		"too many ports":      "name: a\ncontainers:\n  web: {image: docker.io/a/b:1, port: 80, ports: [{port: 5000, protocol: udp, count: 40}, {port: 6000, protocol: udp, count: 40}]}\n",
+		"root route":          "name: a\nroutes: [{path: /, container: web, port: 81}]\n" + ingress,
+		"trailing slash":      "name: a\nroutes: [{path: /rtc/, container: web, port: 81}]\n" + ingress,
+		"dot route":           "name: a\nroutes: [{path: /a/../rtc, container: web, port: 81}]\n" + ingress,
+		"duplicate route":     "name: a\nroutes: [{path: /rtc, container: web, port: 81}, {path: /rtc, container: web, port: 82}]\n" + ingress,
+		"route to nothing":    "name: a\nroutes: [{path: /rtc, container: nope, port: 81}]\n" + ingress,
+		"route to ingress":    "name: a\nroutes: [{path: /rtc, container: web, port: 80}]\n" + ingress,
+		"route protocols":     "name: a\nroutes: [{path: /a, container: web, port: 81}, {path: /b, container: web, port: 81, protocol: h2c}]\n" + ingress,
+		"raw routed port":     "name: a\nroutes: [{path: /a, container: web, port: 81}]\ncontainers:\n  web: {image: docker.io/a/b:1, port: 80, ports: [{port: 81, protocol: tcp}]}\n",
 	} {
 		if _, err := Parse([]byte(doc)); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+}
+
+func TestRoutesAndPorts(t *testing.T) {
+	s, err := Parse([]byte(`name: media
+drain: 30m
+routes:
+  - {path: /rtc, container: sfu, port: 7880}
+  - {path: /twirp, container: sfu, port: 7880, protocol: http}
+  - {path: /pkg.Echo, container: grpc, port: 9000, protocol: h2c}
+containers:
+  sfu:
+    image: docker.io/livekit/livekit-server:1
+    ports:
+      - {port: 7881, protocol: tcp}
+      - {port: 7882, protocol: udp}
+      - {port: 50000, protocol: udp, count: 3}
+  grpc:
+    image: docker.io/a/grpc:1
+  web:
+    image: docker.io/a/web:1
+    port: 8080
+    protocol: http
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(s.HostPorts(), ","); got != "http/7880,http/9000,tcp/7881,udp/7882,udp/50000,udp/50001,udp/50002" {
+		t.Fatal(got)
+	}
+	if s.DrainDuration() != 30*time.Minute || s.Routes[1].Protocol != "" || s.Containers["web"].Protocol != "" {
+		t.Fatal("drain or protocol defaults", s.DrainDuration(), s.Routes[1].Protocol, s.Containers["web"].Protocol)
+	}
+	// Writing a default spells out the same stack, so it must hash the same.
+	explicit, _ := Parse([]byte("name: a\ncontainers:\n  web: {image: docker.io/a/b:1, port: 80, protocol: http, ports: [{port: 9, protocol: udp, count: 1}]}\n"))
+	implicit, _ := Parse([]byte("name: a\ncontainers:\n  web: {image: docker.io/a/b:1, port: 80, ports: [{port: 9, protocol: udp}]}\n"))
+	if explicit.Hash() != implicit.Hash() {
+		t.Fatal("explicit defaults changed the hash")
+	}
+}
+
+// Specs written before routes, ports, protocols and drain existed must store
+// and hash exactly as they did, so redeploying them stays a no-op.
+func TestNewFieldsLeaveOldSpecsUnchanged(t *testing.T) {
+	s, err := Parse([]byte(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(s)
+	for _, key := range []string{"routes", "ports", "protocol", "drain"} {
+		if strings.Contains(string(raw), `"`+key+`"`) {
+			t.Errorf("stored spec gained %q: %s", key, raw)
+		}
+	}
+	if len(s.HostPorts()) != 0 || s.DrainDuration() != 0 {
+		t.Fatal(s.HostPorts(), s.DrainDuration())
 	}
 }
 

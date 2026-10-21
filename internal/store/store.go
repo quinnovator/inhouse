@@ -28,10 +28,12 @@ var (
 	healthV2 string
 	//go:embed v3_lifecycle.sql
 	lifecycleV3 string
+	//go:embed v4_ports.sql
+	portsV4 string
 )
 
 // migrations are forward-only; entry i upgrades user_version i to i+1.
-var migrations = []string{schemaV1, healthV2, lifecycleV3}
+var migrations = []string{schemaV1, healthV2, lifecycleV3, portsV4}
 
 var ErrNotFound = errors.New("not found")
 
@@ -119,18 +121,21 @@ type Service struct {
 }
 
 type Revision struct {
-	Service       string     `json:"service"`
-	Rev           int        `json:"rev"`
-	Spec          spec.Stack `json:"spec"`
-	Hash          string     `json:"spec_hash"`
-	Port          int        `json:"host_port,omitempty"`
-	State         RevState   `json:"state"`
-	Reason        string     `json:"reason,omitempty"`
-	CreatedBy     string     `json:"created_by"`
-	Created       int64      `json:"created_at"`
-	HealthStarted int64      `json:"health_started_at,omitempty"`
-	DrainUntil    int64      `json:"drain_until,omitempty"`
-	Finished      int64      `json:"finished_at,omitempty"`
+	Service string     `json:"service"`
+	Rev     int        `json:"rev"`
+	Spec    spec.Stack `json:"spec"`
+	Hash    string     `json:"spec_hash"`
+	Port    int        `json:"host_port,omitempty"`
+	// Ports are the revision's other loopback ports, by spec.Stack.HostPorts
+	// key. Like Port, they are empty once the pod is removed.
+	Ports         map[string]int `json:"host_ports,omitempty"`
+	State         RevState       `json:"state"`
+	Reason        string         `json:"reason,omitempty"`
+	CreatedBy     string         `json:"created_by"`
+	Created       int64          `json:"created_at"`
+	HealthStarted int64          `json:"health_started_at,omitempty"`
+	DrainUntil    int64          `json:"drain_until,omitempty"`
+	Finished      int64          `json:"finished_at,omitempty"`
 }
 
 type Operation struct {
@@ -294,14 +299,20 @@ func (s *Store) SetDNS(ctx context.Context, name, dns string) error {
 
 // ---- revisions ----
 
-const revisionCols = "service,rev,spec_json,spec_hash,COALESCE(host_port,0),state,reason,created_by,created_at,COALESCE(health_started_at,0),COALESCE(drain_until,0),COALESCE(finished_at,0)"
+const revisionCols = "service,rev,spec_json,spec_hash,COALESCE(host_port,0),state,reason,created_by,created_at,COALESCE(health_started_at,0),COALESCE(drain_until,0),COALESCE(finished_at,0),host_ports"
 
 func scanRevision(row scanner) (Revision, error) {
 	var r Revision
-	var raw string
-	err := row.Scan(&r.Service, &r.Rev, &raw, &r.Hash, &r.Port, &r.State, &r.Reason, &r.CreatedBy, &r.Created, &r.HealthStarted, &r.DrainUntil, &r.Finished)
+	var raw, ports string
+	err := row.Scan(&r.Service, &r.Rev, &raw, &r.Hash, &r.Port, &r.State, &r.Reason, &r.CreatedBy, &r.Created, &r.HealthStarted, &r.DrainUntil, &r.Finished, &ports)
 	if err != nil {
 		return r, notFound(err)
+	}
+	if err = json.Unmarshal([]byte(ports), &r.Ports); err != nil {
+		return r, err
+	}
+	if len(r.Ports) == 0 {
+		r.Ports = nil
 	}
 	return r, json.Unmarshal([]byte(raw), &r.Spec)
 }
@@ -401,10 +412,10 @@ func (s *Store) MarkStopped(ctx context.Context, r Revision) error {
 	})
 }
 
-// ReleasePort records that a revision's pod is gone and frees its port.
+// ReleasePort records that a revision's pod is gone and frees its ports.
 func (s *Store) ReleasePort(ctx context.Context, r Revision) error {
 	return s.write(ctx, func(tx *sql.Tx) error {
-		_, err := tx.Exec("UPDATE revisions SET host_port=NULL WHERE service=? AND rev=?", r.Service, r.Rev)
+		_, err := tx.Exec("UPDATE revisions SET host_port=NULL,host_ports='{}' WHERE service=? AND rev=?", r.Service, r.Rev)
 		return err
 	})
 }
@@ -545,8 +556,8 @@ type Request struct {
 	PortHigh    int
 }
 
-// Record durably reserves a pending revision, a host port and an operation
-// before anything touches the runtime.
+// Record durably reserves a pending revision, its host ports and an
+// operation before anything touches the runtime.
 func (s *Store) Record(ctx context.Context, q Request) (Operation, error) {
 	var out Operation
 	err := s.write(ctx, func(tx *sql.Tx) error {
@@ -575,16 +586,25 @@ func (s *Store) Record(ctx context.Context, q Request) (Operation, error) {
 		if err := tx.QueryRow("SELECT COALESCE(MAX(rev),0)+1 FROM revisions WHERE service=?", q.Stack.Name).Scan(&rev); err != nil {
 			return err
 		}
-		port, err := freePort(tx, q.PortLow, q.PortHigh)
+		keys := q.Stack.HostPorts()
+		free, err := freePorts(tx, q.PortLow, q.PortHigh, 1+len(keys))
 		if err != nil {
 			return err
+		}
+		ports := map[string]int{}
+		for i, k := range keys {
+			ports[k] = free[1+i]
 		}
 		raw, err := json.Marshal(q.Stack)
 		if err != nil {
 			return err
 		}
-		if _, err = tx.Exec("INSERT INTO revisions(service,rev,spec_json,spec_hash,host_port,state,created_by,created_at) VALUES(?,?,?,?,?,'pending',?,?)",
-			q.Stack.Name, rev, string(raw), q.Stack.Hash(), port, q.Actor, now()); err != nil {
+		hostPorts, err := json.Marshal(ports)
+		if err != nil {
+			return err
+		}
+		if _, err = tx.Exec("INSERT INTO revisions(service,rev,spec_json,spec_hash,host_port,host_ports,state,created_by,created_at) VALUES(?,?,?,?,?,?,'pending',?,?)",
+			q.Stack.Name, rev, string(raw), q.Stack.Hash(), free[0], string(hostPorts), q.Actor, now()); err != nil {
 			return err
 		}
 		out = Operation{ID: uuid.NewString(), Kind: q.Kind, Service: q.Stack.Name, Rev: rev, RestoreFrom: q.RestoreFrom, State: Running, Key: q.Key, RequestHash: q.RequestHash, CreatedBy: q.Actor, Created: now()}
@@ -601,29 +621,35 @@ func (s *Store) Record(ctx context.Context, q Request) (Operation, error) {
 	return out, err
 }
 
-func freePort(tx *sql.Tx, low, high int) (int, error) {
-	rows, err := tx.Query("SELECT host_port FROM revisions WHERE host_port IS NOT NULL")
+// freePorts picks n ports in low..high that no revision holds.
+func freePorts(tx *sql.Tx, low, high, n int) ([]int, error) {
+	rows, err := tx.Query(`SELECT host_port FROM revisions WHERE host_port IS NOT NULL
+		UNION ALL SELECT p.value FROM revisions, json_each(revisions.host_ports) AS p WHERE revisions.host_port IS NOT NULL`)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
 	used := map[int]bool{}
 	for rows.Next() {
 		var p int
 		if err := rows.Scan(&p); err != nil {
-			return 0, err
+			return nil, err
 		}
 		used[p] = true
 	}
 	if err := rows.Err(); err != nil {
-		return 0, err
+		return nil, err
 	}
-	for p := low; p <= high; p++ {
+	out := []int{}
+	for p := low; p <= high && len(out) < n; p++ {
 		if !used[p] {
-			return p, nil
+			out = append(out, p)
 		}
 	}
-	return 0, errors.New("host port range exhausted")
+	if len(out) < n {
+		return nil, errors.New("host port range exhausted")
+	}
+	return out, nil
 }
 
 // Complete finishes an operation. A non-empty reason fails it, and the
