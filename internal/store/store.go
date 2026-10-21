@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -185,7 +186,16 @@ func Open(file string) (*Store, error) {
 		return fail(err)
 	}
 	if version > len(migrations) {
-		return fail(fmt.Errorf("database version %d is newer than this binary supports", version))
+		err = fmt.Errorf("database version %d is newer than this binary supports", version)
+		if b := newestBackup(file); b != "" {
+			err = fmt.Errorf("%w; the newest pre-migration backup is %s", err, b)
+		}
+		return fail(err)
+	}
+	if version > 0 && version < len(migrations) {
+		if err = backup(db, file, version); err != nil {
+			return fail(fmt.Errorf("back up before migrating from version %d: %w", version, err))
+		}
 	}
 	for i := version; i < len(migrations); i++ {
 		tx, err := db.Begin()
@@ -208,6 +218,72 @@ func Open(file string) (*Store, error) {
 		return fail(err)
 	}
 	return &Store{db: db}, nil
+}
+
+// keepBackups is how many pre-migration copies of the database Open keeps.
+const keepBackups = 3
+
+// backup copies the database beside itself before Open migrates it, as
+// <file>.<UTC time>.v<version>.bak, so an upgrade can be undone by stopping
+// the daemon, reinstalling the old binary and copying the backup back.
+// Without a backup Open refuses to migrate. Older backups are pruned only
+// once the new one is written, so failed attempts never cost an old one, and
+// a failed copy is removed, so they can't fill the disk either.
+func backup(db *sql.DB, file string, version int) error {
+	// Milliseconds keep a quick restart after a failed migration from
+	// colliding with the backup the failed attempt took.
+	stamp := time.Now().UTC().Format("20060102T150405.000Z")
+	to := fmt.Sprintf("%s.%s.v%d.bak", file, stamp, version)
+	// VACUUM INTO writes a consistent copy, WAL included. Create the file
+	// first so it is never readable by others, whatever the umask, and set
+	// the mode again in case SQLite replaced it.
+	f, err := os.OpenFile(to, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	if err = f.Close(); err == nil {
+		if _, err = db.Exec("VACUUM INTO ?", to); err == nil {
+			err = os.Chmod(to, 0o600)
+		}
+	}
+	if err != nil {
+		_ = os.Remove(to)
+		return err
+	}
+	// Pruning is best effort: a stale backup left behind is no reason to
+	// refuse an upgrade that now has a fresh one.
+	all, _ := backups(file)
+	for i := 0; len(all)-i > keepBackups; i++ {
+		if all[i] != to { // a clock set back would sort it first
+			_ = os.Remove(all[i])
+		}
+	}
+	return nil
+}
+
+// backups lists file's pre-migration backups, oldest first: the timestamp in
+// each name sorts chronologically.
+func backups(file string) ([]string, error) {
+	entries, err := os.ReadDir(filepath.Dir(file)) // sorted by name
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	prefix := filepath.Base(file) + "."
+	for _, e := range entries {
+		if n := e.Name(); e.Type().IsRegular() && strings.HasPrefix(n, prefix) && strings.HasSuffix(n, ".bak") {
+			out = append(out, filepath.Join(filepath.Dir(file), n))
+		}
+	}
+	return out, nil
+}
+
+func newestBackup(file string) string {
+	b, _ := backups(file)
+	if len(b) == 0 {
+		return ""
+	}
+	return b[len(b)-1]
 }
 
 func (s *Store) Close() error { return s.db.Close() }

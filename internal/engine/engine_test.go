@@ -232,7 +232,12 @@ type harness struct {
 
 func setup(t *testing.T) *harness {
 	t.Helper()
-	dir := t.TempDir()
+	return setupIn(t, t.TempDir())
+}
+
+// setupIn runs the engine on the database and age key in dir.
+func setupIn(t *testing.T, dir string) *harness {
+	t.Helper()
 	db, err := store.Open(filepath.Join(dir, "state.db"))
 	if err != nil {
 		t.Fatal(err)
