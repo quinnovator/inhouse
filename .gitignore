@@ -3,6 +3,9 @@
 /instance/
 *.ign
 *.key
+# Upgrade fixtures carry a throwaway age key that only decrypts test secrets.
+!/internal/engine/testdata/upgrade/*/age.key
+/internal/engine/testdata/upgrade/*/inhouse.db-*
 *.env
 .DS_Store
 /console/node_modules/
