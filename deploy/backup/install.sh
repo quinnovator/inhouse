@@ -7,7 +7,9 @@ set -euo pipefail
 install -m 0755 -d /usr/local/libexec/inhouse
 install -o root -g root -m 0755 litestream-start.sh backup.sh retain.sh /usr/local/libexec/inhouse/
 install -o root -g root -m 0644 inhouse-litestream.service inhouse-backup.service inhouse-backup.timer /etc/systemd/system/
-install -o root -g root -m 0700 -d /var/lib/inhouse/backup /var/lib/inhouse/volumes/.trash
+install -o root -g root -m 0700 -d /var/lib/inhouse/backup
+# inhoused moves deleted volumes here as the inhouse user; root empties it.
+install -o inhouse -g inhouse -m 0700 -d /var/lib/inhouse/volumes/.trash
 chmod 0600 /etc/inhouse/backup.env /etc/inhouse/restic-password
 # Config contains no credentials; systemd exposes credentials to the process.
 chmod 0644 /etc/inhouse/litestream.yml

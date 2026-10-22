@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -112,6 +113,12 @@ func MintKey(ctx context.Context, c Credential, tag string, ephemeral bool) (str
 func DeleteDevice(ctx context.Context, c Credential, id Identity, beforeDelete func()) error {
 	if id.DeviceID == "" || id.StableID == "" || id.DNS == "" || (id.Tag != TagService && id.Tag != TagEphemeral) {
 		return errors.New("saved node identity is incomplete; refusing device deletion")
+	}
+	// A missing device counts as deleted, so an ID the API can't find would
+	// look like success while the device stays. Only a decimal ID is one it
+	// knows.
+	if _, err := strconv.ParseUint(id.DeviceID, 10, 64); err != nil {
+		return fmt.Errorf("saved device ID %q is not a Tailscale device ID; refusing device deletion", id.DeviceID)
 	}
 	token, err := Token(ctx, c, "devices:core", []string{TagService, TagEphemeral})
 	if err != nil {
