@@ -9,7 +9,10 @@ set +a
 export RESTIC_PASSWORD_FILE="$CREDENTIALS_DIRECTORY/restic-password"
 export RESTIC_CACHE_DIR=/var/lib/inhouse/backup/cache
 root_dir=/var/lib/inhouse
-mkdir -p "$root_dir/backup" "$root_dir/volumes/.trash"
+mkdir -p "$root_dir/backup"
+# inhoused moves deleted volumes into trash as the inhouse user. This also
+# hands back a trash folder that an earlier run created as root.
+install -o inhouse -g inhouse -m 0700 -d "$root_dir/volumes/.trash"
 exec 9>"$root_dir/backup/lock"
 flock -n 9
 # Snapshot the actual latest data each night, not just the pre-deploy image.
