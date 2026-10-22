@@ -2,7 +2,8 @@
 # Root on a freshly provisioned destination, with the original daemon stopped.
 # Arguments: verified Litestream DB, restic restore root, out-of-band age key.
 # Refuses to overwrite existing state, keys, identities or volume data. The
-# empty ts/ and volumes/ directories created by provisioning are accepted.
+# empty ts/ and volumes/ directories created by provisioning, and the empty
+# volumes/.trash it creates for the daemon, are accepted.
 set -euo pipefail
 [[ $EUID -eq 0 ]]
 database=${1:?Restored SQLite database required}
@@ -19,11 +20,22 @@ if systemctl is-active --quiet inhoused.service; then
   exit 1
 fi
 empty_or_absent() { [[ ! -e $1 ]] || { [[ -d $1 && ! -L $1 && -z $(ls -A "$1") ]]; }; }
+# volumes/ may hold only an empty, real .trash directory.
+volumes_empty() {
+  local volumes=$root_dir/volumes entry
+  [[ -e $volumes || -L $volumes ]] || return 0
+  [[ -d $volumes && ! -L $volumes ]] || return 1
+  for entry in "$volumes"/* "$volumes"/.[!.]* "$volumes"/..?*; do
+    [[ -e $entry || -L $entry ]] || continue
+    [[ $entry == "$volumes/.trash" && ! -L $entry ]] && empty_or_absent "$entry" && continue
+    return 1
+  done
+}
 [[ ! -e $root_dir/state/inhouse.db && ! -e $root_dir/keys/age.key ]]
 empty_or_absent "$root_dir/ts"
-empty_or_absent "$root_dir/volumes"
+volumes_empty
 [[ -d $restore_root/var/lib/inhouse/ts ]]
-install -o inhouse -g inhouse -m 0700 -d "$root_dir/state" "$root_dir/keys" "$root_dir/volumes" "$root_dir/snapshots" "$root_dir/home"
+install -o inhouse -g inhouse -m 0700 -d "$root_dir/state" "$root_dir/keys" "$root_dir/volumes" "$root_dir/volumes/.trash" "$root_dir/snapshots" "$root_dir/home"
 install -o inhouse -g inhouse -m 0600 "$database" "$root_dir/state/inhouse.db"
 install -o inhouse -g inhouse -m 0600 "$age_key" "$root_dir/keys/age.key"
 # cp -a would nest the copy inside an existing directory.
