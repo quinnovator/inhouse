@@ -85,7 +85,7 @@ func (m *Manager) Restore(ctx context.Context, candidate store.Revision, from in
 			if err = directory(staged); err != nil {
 				return err
 			}
-			if err = os.Rename(live, replaced); err != nil {
+			if err = toTrash(live, replaced); err != nil {
 				return err
 			}
 		} else if err != nil {
