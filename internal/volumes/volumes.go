@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -57,6 +58,17 @@ func directory(p string) error {
 		return fmt.Errorf("%s must be a directory", p)
 	}
 	return nil
+}
+
+// toTrash moves data into volumes/.trash. The daemon does this as the inhouse
+// user while the root backup job empties the trash, so a trash folder root
+// created is the usual reason it fails.
+func toTrash(from, to string) error {
+	err := os.Rename(from, to)
+	if errors.Is(err, fs.ErrPermission) {
+		return fmt.Errorf("%w; %s must be owned by the inhouse user", err, filepath.Dir(to))
+	}
+	return err
 }
 
 func (m *Manager) snapshotDir(service string) string {
@@ -186,7 +198,7 @@ func (m *Manager) Delete(ctx context.Context, svc store.Service) error {
 		if err := os.MkdirAll(trash, 0o700); err != nil {
 			return err
 		}
-		return os.Rename(parent, filepath.Join(trash, svc.Name+"@"+strconv.FormatInt(svc.Deleted, 10)))
+		return toTrash(parent, filepath.Join(trash, svc.Name+"@"+strconv.FormatInt(svc.Deleted, 10)))
 	}
 	for _, dir := range []string{parent, m.snapshotDir(svc.Name)} {
 		entries, err := os.ReadDir(dir)

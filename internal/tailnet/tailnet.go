@@ -17,10 +17,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"tailscale.com/client/local"
+	"tailscale.com/tailcfg"
 	"tailscale.com/tsnet"
 )
 
@@ -133,7 +135,7 @@ func Open(ctx context.Context, c NodeConfig) (*Node, error) {
 	}
 	dns := strings.TrimSuffix(status.Self.DNSName, ".")
 	if c.Certificate {
-		id := Identity{DeviceID: fmt.Sprint(status.Self.NodeID), StableID: string(status.Self.ID), DNS: dns, Tag: c.Tag}
+		id := Identity{DeviceID: DeviceID(status.Self.NodeID), StableID: string(status.Self.ID), DNS: dns, Tag: c.Tag}
 		raw, _ := json.Marshal(id)
 		if err = os.WriteFile(filepath.Join(c.Dir, identityFile), raw, 0o600); err != nil {
 			return failed(err)
@@ -151,12 +153,22 @@ func Open(ctx context.Context, c NodeConfig) (*Node, error) {
 
 func (n *Node) Close() error { return n.Server.Close() }
 
-// ReadIdentity loads the identity Open recorded in dir.
+// DeviceID is a node's device ID as the Tailscale API knows it: the node ID
+// in decimal. NodeID's own String method adds a "nodeid:" prefix, which the
+// API doesn't recognize as a device.
+func DeviceID(node tailcfg.NodeID) string { return strconv.FormatInt(int64(node), 10) }
+
+// ReadIdentity loads the identity Open recorded in dir. Releases up to 0.2.0
+// saved the device ID with the "nodeid:" prefix; it is read without it.
 func ReadIdentity(dir string) (Identity, error) {
 	var id Identity
 	raw, err := os.ReadFile(filepath.Join(dir, identityFile))
 	if err != nil {
 		return id, err
 	}
-	return id, json.Unmarshal(raw, &id)
+	if err = json.Unmarshal(raw, &id); err != nil {
+		return id, err
+	}
+	id.DeviceID = strings.TrimPrefix(id.DeviceID, "nodeid:")
+	return id, nil
 }
