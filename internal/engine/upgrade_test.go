@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -43,11 +44,18 @@ func upgradeFrom(t *testing.T, fixture string) {
 	}
 	file := filepath.Join(dir, "state.db")
 	before := rowCounts(t, file)
+	from := schemaVersion(t, file)
 	h := setupIn(t, dir)
 	ctx := context.Background()
 
-	if b, _ := filepath.Glob(file + ".*.bak"); len(b) != 1 {
-		t.Fatal("expected one pre-migration backup", b)
+	// Opening backs up a database it migrates; a release with the current
+	// schema needs neither.
+	want := 0
+	if from < schemaVersion(t, file) {
+		want = 1
+	}
+	if b, _ := filepath.Glob(file + ".*.bak"); len(b) != want {
+		t.Fatalf("expected %d pre-migration backups from schema %d, found %v", want, from, b)
 	}
 	// Migrations may add tables and columns, never lose rows.
 	after := rowCounts(t, file)
@@ -163,6 +171,19 @@ func rowCounts(t *testing.T, file string) map[string]int {
 		counts[table] = n
 	}
 	return counts
+}
+
+func schemaVersion(t *testing.T, file string) int {
+	t.Helper()
+	v, err := column(file, "PRAGMA user_version")
+	if err != nil || len(v) != 1 {
+		t.Fatal("read schema version", v, err)
+	}
+	n, err := strconv.Atoi(v[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
 }
 
 func column(file, query string) ([]string, error) {
