@@ -117,7 +117,7 @@ close public SSH ([details](docs/operating.md#2-host)).
 0600):
 
 ```sh
-VERSION=0.1.0 ARCH=amd64   # or arm64
+VERSION=0.2.2 ARCH=amd64   # or arm64
 base=https://github.com/quinnovator/inhouse/releases/download/v$VERSION
 curl -fsSLO "$base/inhoused_${VERSION}_linux_$ARCH.tar.gz"
 curl -fsSLO "$base/checksums.sha512"
