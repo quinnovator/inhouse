@@ -240,3 +240,7 @@ upgrade whichever is older.
 The version describes the document, not the service: it is not part of the
 stored revision, and adding `version: 1` to a spec that was deployed without
 one changes nothing.
+
+## Tunnel device
+
+An administrator may set `devices: [/dev/net/tun]` on a container for a userspace VPN. This is the only permitted device. It does not grant host networking or extra capabilities. Preview/deployer identities cannot request devices. The host must provide the device and, on SELinux hosts, permit the container to open it.

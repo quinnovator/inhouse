@@ -313,6 +313,13 @@ func (p *Podman) createContainer(ctx context.Context, r store.Revision, n, pod s
 			"cpu":    map[string]any{"period": 100000, "quota": int64(c.Resources.CPUs * 100000)},
 		},
 	}
+	if len(c.Devices) > 0 {
+		devices := make([]any, 0, len(c.Devices))
+		for _, path := range c.Devices {
+			devices = append(devices, map[string]any{"path": path})
+		}
+		body["devices"] = devices
+	}
 	if len(c.Command) > 0 {
 		body["entrypoint"] = c.Command
 	}
