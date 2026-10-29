@@ -217,6 +217,7 @@ function PlanView({ plan }: { plan: Plan }) {
                 <th scope="col">Environment</th>
                 <th scope="col">Secrets</th>
                 <th scope="col">Volumes</th>
+                <th scope="col">Devices</th>
                 <th scope="col">Resources</th>
               </tr>
             </thead>
@@ -279,6 +280,7 @@ function PlanRow({ name, before, after }: { name: string; before?: ContainerPlan
       <td className="mono small">{diff((x) => x.env_keys.join(', ') || '—')}</td>
       <td className="mono small">{diff((x) => pairs(x.secrets, ' ← '))}</td>
       <td className="mono small">{diff((x) => pairs(x.volumes, ' → '))}</td>
+      <td className="mono small">{diff((x) => x.devices?.join(', ') || '—')}</td>
       <td className="small nowrap">{diff((x) => `${x.resources.memory} · ${x.resources.cpus} CPU`)}</td>
     </tr>
   )

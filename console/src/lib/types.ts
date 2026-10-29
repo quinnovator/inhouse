@@ -171,6 +171,7 @@ export type ContainerPlan = {
   env_keys: string[]
   secrets?: Record<string, string>
   volumes?: Record<string, string>
+  devices?: string[]
   resources: { memory: string; cpus: number }
 }
 
