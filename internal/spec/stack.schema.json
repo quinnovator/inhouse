@@ -184,6 +184,15 @@
               "pattern": "^/"
             },
             "description": "Volume name -> absolute mount path. Volumes belong to the service and survive deploys."
+          },
+          "devices": {
+            "type": "array",
+            "maxItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "const": "/dev/net/tun"
+            },
+            "description": "Admin-only tunnel device; refused for deployer/preview identities."
           }
         }
       }

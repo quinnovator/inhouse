@@ -1199,3 +1199,17 @@ func TestRecreateIgnoresStackDrain(t *testing.T) {
 		t.Fatalf("replaced recreate revision kept for the stack's drain: %+v", old)
 	}
 }
+
+func TestPlanShowsDeviceChanges(t *testing.T) {
+	h := setup(t)
+	raw := stack("hello", "docker.io/traefik/whoami:1", "")
+	h.deploy(t, raw, "")
+	withDevice := []byte(strings.Replace(string(raw), "port: 80\n", "port: 80\n    devices: [/dev/net/tun]\n", 1))
+	plan, err := h.Plan(admin(), withDevice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Before["web"].Devices) != 0 || len(plan.After["web"].Devices) != 1 || plan.After["web"].Devices[0] != "/dev/net/tun" {
+		t.Fatalf("device changes missing: %+v", plan)
+	}
+}

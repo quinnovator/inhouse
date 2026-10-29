@@ -153,6 +153,12 @@ func (g Grant) covers(s spec.Stack) bool {
 	if g.Role == Admin {
 		return true
 	}
+	// Device access is reserved for administrators, never preview/deployer identities.
+	for _, c := range s.Containers {
+		if len(c.Devices) != 0 {
+			return false
+		}
+	}
 	if g.Role != Deployer || !g.matches(s.Name) {
 		return false
 	}

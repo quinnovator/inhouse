@@ -585,6 +585,7 @@ type ContainerPlan struct {
 	EnvKeys   []string          `json:"env_keys"`
 	Secrets   map[string]string `json:"secrets,omitempty"`
 	Volumes   map[string]string `json:"volumes,omitempty"`
+	Devices   []string          `json:"devices,omitempty"`
 	Resources spec.Resources    `json:"resources"`
 }
 
@@ -614,7 +615,7 @@ func containers(s *spec.Stack) map[string]ContainerPlan {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
-		out[name] = ContainerPlan{c.Image, c.Port, c.Protocol, c.Ports, keys, c.Secrets, c.Volumes, c.Resources}
+		out[name] = ContainerPlan{c.Image, c.Port, c.Protocol, c.Ports, keys, c.Secrets, c.Volumes, c.Devices, c.Resources}
 	}
 	return out
 }
