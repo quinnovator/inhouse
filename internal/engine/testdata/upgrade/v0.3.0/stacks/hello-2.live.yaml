@@ -1,0 +1,6 @@
+name: hello
+containers:
+  web:
+    image: docker.io/traefik/whoami:v1.11.0
+    port: 80
+    health: {path: /health, timeout: 5s}

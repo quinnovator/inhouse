@@ -86,7 +86,8 @@ type Stack struct {
 }
 
 type Container struct {
-	// Devices is restricted to the userspace tunnel device; no host disks or arbitrary device access.
+	// Devices is restricted to the userspace tunnel device and KVM; no host
+	// disks or arbitrary device access.
 	Devices []string `json:"devices,omitempty" yaml:"devices"`
 	Image   string   `json:"image" yaml:"image"`
 	Port    int      `json:"port,omitempty" yaml:"port"`
@@ -266,15 +267,21 @@ func (s *Stack) Validate() error {
 	return nil
 }
 
+// allowedDevices are the host devices an administrator may give a container:
+// the userspace tunnel device, for VPNs, and KVM, for virtual machines.
+var allowedDevices = map[string]bool{"/dev/net/tun": true, "/dev/kvm": true}
+
 func (c *Container) validate(name string) error {
 	field := func(f string) string { return "containers." + name + "." + f }
-	if len(c.Devices) > 1 {
-		return fmt.Errorf("%s: at most /dev/net/tun", field("devices"))
-	}
+	seen := map[string]bool{}
 	for _, device := range c.Devices {
-		if device != "/dev/net/tun" {
-			return fmt.Errorf("%s: only /dev/net/tun is allowed", field("devices"))
+		if !allowedDevices[device] {
+			return fmt.Errorf("%s: only /dev/net/tun and /dev/kvm are allowed", field("devices"))
 		}
+		if seen[device] {
+			return fmt.Errorf("%s: %s is listed twice", field("devices"), device)
+		}
+		seen[device] = true
 	}
 	host, _, _ := strings.Cut(c.Image, "/")
 	if c.Image == "" || strings.ContainsAny(c.Image, " \t\r\n") || !strings.Contains(c.Image, "/") || !strings.ContainsAny(host, ".:") {

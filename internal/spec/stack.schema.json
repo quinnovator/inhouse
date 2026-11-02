@@ -187,12 +187,12 @@
           },
           "devices": {
             "type": "array",
-            "maxItems": 1,
+            "maxItems": 2,
             "uniqueItems": true,
             "items": {
-              "const": "/dev/net/tun"
+              "enum": ["/dev/net/tun", "/dev/kvm"]
             },
-            "description": "Admin-only tunnel device; refused for deployer/preview identities."
+            "description": "Admin-only host devices: the tunnel device and KVM; refused for deployer/preview identities."
           }
         }
       }

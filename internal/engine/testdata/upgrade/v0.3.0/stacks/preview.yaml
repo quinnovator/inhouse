@@ -1,0 +1,6 @@
+name: preview-docs
+ttl: 1s
+containers:
+  web:
+    image: docker.io/traefik/whoami@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    port: 80
