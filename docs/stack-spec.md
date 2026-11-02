@@ -241,6 +241,11 @@ The version describes the document, not the service: it is not part of the
 stored revision, and adding `version: 1` to a spec that was deployed without
 one changes nothing.
 
-## Tunnel device
+## Devices
 
-An administrator may set `devices: [/dev/net/tun]` on a container for a userspace VPN. This is the only permitted device. It does not grant host networking or extra capabilities. Preview/deployer identities cannot request devices. The host must provide the device and, on SELinux hosts, permit the container to open it.
+An administrator may give a container two host devices, and no others:
+
+- `/dev/net/tun`, for a userspace VPN.
+- `/dev/kvm`, to run virtual machines, such as microVMs for sandboxed code.
+
+For example, `devices: [/dev/net/tun, /dev/kvm]`. A device grants no host networking or extra capabilities. Preview/deployer identities cannot request devices. The host must provide each device, readable and writable by the container's user (Fedora's `/dev/kvm` is mode 0666), and on SELinux hosts permit the container to open it: container-selinux allows KVM, while the tunnel device may need a policy module.
