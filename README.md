@@ -158,12 +158,28 @@ for your own app ([stack spec](docs/stack-spec.md),
 
 - One host. No clustering, no multi-tenancy, and no sandbox for untrusted
   code beyond rootless containers with per-service user namespaces.
-- One HTTPS address per service. Raw TCP and UDP ports are reachable from
-  the tailnet only, never through Funnel, and carry no identity headers.
-- All tailnet listeners share the daemon process: restarting `inhoused`
-  briefly interrupts HTTPS for every service (containers keep running).
-- Services with volumes update by stopping the old revision first, so they
-  see a few seconds of downtime per deploy.
+- One HTTPS address per service, on port 443. The edge terminates TLS and
+  speaks plain HTTP/1.1 or `h2c` to the pod, never TLS, so a pod that wants
+  its own TLS needs a raw TCP port.
+- WebSockets reach the pod over HTTP/1.1 only: an `h2c` ingress or route
+  can't accept them, so a gRPC service serves its WebSockets from an `http`
+  [route](docs/stack-spec.md#routes).
+- The pod must start its response, headers at least, within 10 minutes, or
+  the caller gets a 502. A gRPC stream that may wait longer before its first
+  message should send its headers first.
+- Raw TCP and UDP ports are reachable from the tailnet only, never through
+  Funnel, and carry no identity headers. A stack publishes at most 64, and
+  a TCP one can't be 443, the ingress port or a routed port.
+- Each UDP port tracks at most 512 peers at once, and forgets a peer silent
+  both ways for 2 minutes. Keep datagrams within the tailnet's 1280-byte MTU.
+- All tailnet listeners, HTTPS and raw ports alike, live in the daemon
+  process: restarting `inhoused` briefly interrupts HTTPS and closes every
+  open raw connection and UDP flow, for every service (containers keep
+  running).
+- A replaced revision keeps its open connections for at most 24 hours
+  (`drain`). Services with volumes update by stopping the old revision
+  first, so they see a few seconds of downtime per deploy and their open
+  streams, calls and raw connections end without a drain.
 - The default subordinate ID range supports 64 services. A persistent
   service holds its slot for the host's lifetime, even after deletion; an
   ephemeral one frees its slot when it is deleted.
